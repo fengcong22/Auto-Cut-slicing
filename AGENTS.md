@@ -16,6 +16,10 @@ Develop on `codex/*`, `feature/*` or `fix/*` branches. It is not an Auto-Cut Lit
   Residual previous-topic content requires a reviewed clean later frame and a bounded freeze
   until natural new content can resume, with original audio continuing. Pixel/source equality
   alone does not establish that a cut-in picture is contextually appropriate.
+- Review pacing at semantic joins. When a pause is requested, hold the previous picture and
+  preserve a verified speech-free source tail when available, including the last word's decay;
+  shift the following picture and speech together. Do not treat a cut at the final word as
+  sufficient breathing room or include the next excluded word to obtain a pause.
 - Unknown operations, ambiguous matches, invalid or empty ranges must fail before draft writing.
 - Review labels preserve `source_text` exactly. Keep diagnostic status in receipts only.
 - Reuse Auto-Cut Lite through the pinned external dependency bridge. Never mutate its code,
