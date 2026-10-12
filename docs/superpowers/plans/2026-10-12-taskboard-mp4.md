@@ -77,7 +77,7 @@ examples/taskboard-request.json, maintained and installed repository SKILL.md, p
 - [x] Document exact contract, special-operation evidence, receipt states and resume behavior.
 - [x] Run pytest and Ruff; use generated real media for end-to-end fixed-profile acceptance.
 - [x] Request independent branch review, fix actionable defects with regression cases.
-- [ ] Commit verified intended changes, confirm clean git status and report actual verification.
+- [x] Commit verified intended changes, confirm clean git status and report actual verification.
 
 ## Verification record
 
