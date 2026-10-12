@@ -8,6 +8,14 @@ Develop on `codex/*`, `feature/*` or `fix/*` branches. It is not an Auto-Cut Lit
 - Independent slices and ordered multi-source concatenation share one maintained planner.
 - Speech deletion requires source-hash-bound word timestamps, a unique exact contiguous match,
   and protected `must_keep` checks. Never substitute rough times for word boundaries.
+- Treat requested start times as local editing anchors. Prefer a complete nearby word or phrase;
+  do not retain an earlier introductory clause merely to reach an ASR sentence boundary.
+  Start adjustments normally stay within about one second. Larger changes require content review,
+  not a blind one-second clamp; encode the reviewed start with a source-bound `start_cue`.
+- Inspect the first picture at every output opening and splice, plus the surrounding transition.
+  Residual previous-topic content requires a reviewed clean later frame and a bounded freeze
+  until natural new content can resume, with original audio continuing. Pixel/source equality
+  alone does not establish that a cut-in picture is contextually appropriate.
 - Unknown operations, ambiguous matches, invalid or empty ranges must fail before draft writing.
 - Review labels preserve `source_text` exactly. Keep diagnostic status in receipts only.
 - Reuse Auto-Cut Lite through the pinned external dependency bridge. Never mutate its code,
