@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 
 from auto_cut_slicing.cli import main
 
@@ -113,3 +116,19 @@ def test_failed_batch_receipt_preserves_partial_success_without_claiming_complet
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["ok"] is False and receipt["status"] == "failed"
     assert receipt["drafts"] == [{"output_id": "one"}]
+
+
+def test_taskboard_stdout_is_utf8_json_under_nonunicode_host_encoding(tmp_path):
+    request = tmp_path / 'request.json'
+    request.write_text(json.dumps({'contract_version': 1, '多余字段😀': 1}, ensure_ascii=False), encoding='utf-8')
+    process = subprocess.run([
+        sys.executable, '-m', 'auto_cut_slicing', 'run', str(request),
+        '--result', str(tmp_path / 'result.json'),
+    ], capture_output=True, text=True, encoding='utf-8', env={
+        **os.environ, 'PYTHONIOENCODING': 'ascii', 'PYTHONUTF8': '0',
+    })
+    assert process.returncode == 1
+    result = json.loads(process.stdout)
+    assert result['ok'] is False
+    assert '多余字段😀' in result['error']['message']
+    assert 'Traceback' not in process.stderr

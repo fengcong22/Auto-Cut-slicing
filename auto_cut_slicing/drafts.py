@@ -67,6 +67,8 @@ def validate_saved_draft(draft_path, plan, output_id, *, declared_root=None) -> 
     draft_path = Path(draft_path).resolve()
     declared_root = Path(declared_root or draft_path).resolve()
     output = _output(plan, output_id)
+    if output.get("effects"):
+        raise SlicingError("MP4-only effects are not supported in editable draft output")
     duration = int(output["duration_us"])
     if duration <= 0 or not output.get("segments"):
         raise SlicingError("Cannot accept an empty editable draft")
@@ -201,8 +203,10 @@ def validate_saved_draft(draft_path, plan, output_id, *, declared_root=None) -> 
 def write_draft(plan, output_id, drafts_root, *, config=None) -> dict:
     from .media import verify_sources
 
-    verify_sources(plan)
     output = _output(plan, output_id)
+    if output.get("effects"):
+        raise SlicingError("MP4-only effects are not supported in editable draft output")
+    verify_sources(plan)
     name = str(output.get("name") or output_id)
     if (
         name in {"", ".", ".."}

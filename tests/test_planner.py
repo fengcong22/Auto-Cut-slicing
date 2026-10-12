@@ -282,3 +282,233 @@ def test_canonical_job_and_plan_digests_are_deterministic(job_factory):
     digest = first.pop("plan_sha256")
     assert digest == json_sha256(first)
     assert first["job_sha256"] == json_sha256(job)
+
+
+@pytest.mark.parametrize("anchor,cue_start", [(3, 2.4), (2, 2.4)])
+def test_start_cue_uses_exact_word_boundary_on_either_side_of_numeric_anchor(
+    job_factory, anchor, cue_start
+):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip.update(start=anchor, end=6, start_cue={"text": "首先"})
+    output = compile_fixture(
+        job_factory, job, [("首先", cue_start, 2.8), ("内容", 3, 4), ("首先", 8, 8.4)]
+    )["outputs"][0]
+    assert output["segments"][0]["source_start_us"] == 2_400_000
+    assert output["duration_us"] == 3_600_000
+
+
+def test_start_cue_requires_unique_exact_source_bound_word_evidence(job_factory):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip.update(start=2, start_cue={"text": "首先"})
+    with pytest.raises(SlicingError, match="requires source-bound ASR"):
+        compile_fixture(job_factory, job)
+    with pytest.raises(SlicingError, match="unique exact ASR match"):
+        compile_fixture(job_factory, job, [("首先", 1, 1.4), ("首先", 3, 3.4)])
+    with pytest.raises(SlicingError, match="unique exact ASR match"):
+        compile_fixture(job_factory, job, [("首先我们", 2, 3)])
+    # The default three-second radius cannot silently use a distant occurrence.
+    with pytest.raises(SlicingError, match="unique exact ASR match"):
+        compile_fixture(job_factory, job, [("首先", 5.1, 5.5)])
+    clip["start_cue"]["search_radius"] = 4
+    output = compile_fixture(job_factory, job, [("首先", 5.1, 5.5)])["outputs"][0]
+    assert output["segments"][0]["source_start_us"] == 5_100_000
+
+
+@pytest.mark.parametrize("cue_start", [1.8, 2.4])
+def test_freeze_at_nominal_clip_start_follows_exact_cue_boundary(job_factory, cue_start):
+    job, _, _ = job_factory()
+    raw = "00:02（首先），保持这一帧。"
+    clip = job["outputs"][0]["clips"][0]
+    clip.update(start=2, start_cue={"text": "首先"}, edits=[
+        {"id": "freeze", "kind": "freeze_frame", "start": 2, "end": 4,
+         "frame_time": 1, "source_text": raw}
+    ])
+    output = compile_fixture(job_factory, job, [("首先", cue_start, cue_start + .2)])["outputs"][0]
+    effect = output["effects"][0]
+    assert effect["source_start_us"] == int(cue_start * 1_000_000)
+    assert effect["target_start_us"] == 0
+    assert effect["source_text"] == raw
+    assert effect["requested_start_us"] == 2_000_000
+    assert effect["resolved_start_us"] == int(cue_start * 1_000_000)
+    cue = output["start_cues"][0]
+    assert cue["requested_start_us"] == 2_000_000
+    assert cue["source_start_us"] == int(cue_start * 1_000_000)
+    assert cue["match_strategy"] == "unique_exact_whole_token"
+
+
+def test_mute_word_preserves_duration_and_verbatim_label_with_exact_evidence(job_factory):
+    job, _, _ = job_factory()
+    raw = "00:02， 只删‘声音’？\n保留画面。"
+    job["outputs"][0]["clips"][0]["edits"] = [
+        {"id": "silent", "kind": "mute_word", "text": "声音", "rough_time": 2,
+         "source_text": raw, "must_keep": ["保留"]}
+    ]
+    output = compile_fixture(
+        job_factory, job, [("声音", 2.1, 2.6), ("保留", 3, 4)]
+    )["outputs"][0]
+    assert output["duration_us"] == 10_000_000
+    assert len(output["segments"]) == 1
+    assert output["edits"] == []
+    effect = output["effects"][0]
+    assert {key: effect[key] for key in (
+        "kind", "item_id", "clip_id", "source_id", "source_text", "source_start_us",
+        "source_end_us", "target_start_us", "duration_us"
+    )} == {
+        "kind": "mute", "item_id": "c1/silent", "clip_id": "c1", "source_id": "s1",
+        "source_text": raw, "source_start_us": 2_100_000, "source_end_us": 2_600_000,
+        "target_start_us": 2_100_000, "duration_us": 500_000,
+    }
+    assert effect["word_indices"] == [0]
+    assert effect["matched_text"] == "声音"
+    assert effect["match_strategy"] == "unique_exact_whole_token"
+    assert effect["alignment_sha256"]
+    assert effect["provider"] == "test-fixture"
+    assert output["markers"][0]["source_text"] == raw
+
+
+def test_freeze_effect_maps_after_preceding_deletion(job_factory):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip["deletions"] = [
+        {"id": "delete", "kind": "range", "start": 0, "end": 1, "source_text": "删开头"}
+    ]
+    clip["edits"] = [
+        {"id": "freeze", "kind": "freeze_frame", "start": 2, "end": 4,
+         "frame_time": 7, "source_text": "冻结，保留声音。"}
+    ]
+    output = compile_fixture(job_factory, job)["outputs"][0]
+    assert output["duration_us"] == 9_000_000
+    assert output["effects"] == [{
+        "kind": "freeze_frame", "item_id": "c1/freeze", "clip_id": "c1", "source_id": "s1",
+        "source_text": "冻结，保留声音。", "source_start_us": 2_000_000,
+        "source_end_us": 4_000_000, "target_start_us": 1_000_000, "duration_us": 2_000_000,
+        "frame_time_us": 7_000_000,
+    }]
+
+
+@pytest.mark.parametrize("kind", ["mute_word", "freeze_frame"])
+def test_effect_splits_across_deleted_range_and_ordered_clip_offset(job_factory, kind):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip["deletions"] = [
+        {"id": "cut", "kind": "range", "start": 3, "end": 4, "source_text": "删除一秒"}
+    ]
+    edit = {"id": "fx", "kind": kind, "source_text": "效果保持原文"}
+    if kind == "mute_word":
+        edit["text"] = "持续声音"
+    else:
+        edit.update(start=2, end=5, frame_time=1)
+    clip["edits"] = [edit]
+    job["outputs"][0]["clips"].insert(
+        0, {"id": "intro", "source": "s1", "start": 6, "end": 8}
+    )
+    output = compile_fixture(job_factory, job, [("持续声音", 2, 5)])["outputs"][0]
+    assert output["duration_us"] == 11_000_000
+    assert [
+        (row["source_start_us"], row["source_end_us"], row["target_start_us"], row["duration_us"])
+        for row in output["effects"]
+    ] == [(2_000_000, 3_000_000, 4_000_000, 1_000_000),
+          (4_000_000, 5_000_000, 5_000_000, 1_000_000)]
+    assert [row["item_id"] for row in output["effects"]] == ["c1/fx", "c1/fx"]
+    assert len([row for row in output["markers"] if row["item_id"] == "c1/fx"]) == 1
+
+
+@pytest.mark.parametrize("owner_kind,other_kind", [("word", "mute_word"), ("mute_word", "range")])
+def test_must_keep_protection_spans_deletions_and_mute_edits(
+    job_factory, owner_kind, other_kind
+):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    owner = {"id": "owner", "kind": owner_kind, "text": "删除",
+             "must_keep": ["保留"], "source_text": "保留另一个词"}
+    other = {"id": "other", "kind": other_kind, "source_text": "修改受保护词"}
+    if other_kind == "range":
+        other.update(start=2, end=4)
+    else:
+        other["text"] = "保留"
+    clip["deletions"] = [row for row in (owner, other) if row["kind"] in ("word", "range")]
+    clip["edits"] = [row for row in (owner, other) if row["kind"] == "mute_word"]
+    with pytest.raises(SlicingError, match="overlaps must_keep protected"):
+        compile_fixture(job_factory, job, [("删除", 0, 1), ("保留", 2, 3)])
+
+
+@pytest.mark.parametrize("kind", ["mute_word", "freeze_frame"])
+def test_overlapping_same_kind_effects_fail(job_factory, kind):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    if kind == "mute_word":
+        edits = [{"id": value, "kind": kind, "text": "声音", "source_text": value}
+                 for value in ("a", "b")]
+    else:
+        edits = [{"id": "a", "kind": kind, "start": 2, "end": 4, "frame_time": 1,
+                  "source_text": "a"},
+                 {"id": "b", "kind": kind, "start": 3, "end": 5, "frame_time": 1,
+                  "source_text": "b"}]
+    clip["edits"] = edits
+    with pytest.raises(SlicingError, match="Overlapping.*effect"):
+        compile_fixture(job_factory, job, [("声音", 2, 4)])
+
+
+def test_cross_kind_effects_may_overlap_without_shortening_timeline(job_factory):
+    job, _, _ = job_factory()
+    job["outputs"][0]["clips"][0]["edits"] = [
+        {"id": "silent", "kind": "mute_word", "text": "声音", "source_text": "静音"},
+        {"id": "freeze", "kind": "freeze_frame", "start": 2, "end": 4,
+         "frame_time": 0, "source_text": "冻结"},
+    ]
+    output = compile_fixture(job_factory, job, [("声音", 2.5, 3.5)])["outputs"][0]
+    assert output["duration_us"] == 10_000_000
+    assert {row["kind"] for row in output["effects"]} == {"mute", "freeze_frame"}
+
+
+@pytest.mark.parametrize("mutation,message", [
+    ({"kind": "speed"}, "Unknown edit kind"),
+    ({"frame_time": 10}, "frame_time"),
+    ({"frame_time": True}, "frame_time"),
+    ({"start": 4, "end": 4}, "requires 0 <= start"),
+    ({"start": 0, "end": 2}, "outside its selected clip"),
+    ({"source_text": ""}, "source_text"),
+    ({"speed": 2}, "Unsupported"),
+])
+def test_invalid_effect_operations_fail_before_planning(job_factory, mutation, message):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip["start"] = 1
+    clip["edits"] = [{"id": "fx", "kind": "freeze_frame", "start": 2, "end": 4,
+                      "frame_time": 0, "source_text": "冻结", **mutation}]
+    with pytest.raises(SlicingError, match=message):
+        compile_fixture(job_factory, job)
+
+
+def test_effect_requires_unique_id_across_all_clip_operations(job_factory):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip["deletions"] = [
+        {"id": "same", "kind": "range", "start": 0, "end": 1, "source_text": "删"}
+    ]
+    clip["edits"] = [
+        {"id": "same", "kind": "freeze_frame", "start": 2, "end": 3,
+         "frame_time": 0, "source_text": "冻结"}
+    ]
+    with pytest.raises(SlicingError, match="Duplicate"):
+        compile_fixture(job_factory, job)
+
+
+def test_effect_cannot_silently_disappear_in_fully_deleted_range(job_factory):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip["deletions"] = [
+        {"id": "delete", "kind": "range", "start": 2, "end": 4, "source_text": "删除"}
+    ]
+    clip["edits"] = [
+        {"id": "freeze", "kind": "freeze_frame", "start": 2, "end": 3,
+         "frame_time": 0, "source_text": "冻结"}
+    ]
+    with pytest.raises(SlicingError, match="no retained"):
+        compile_fixture(job_factory, job)
+
+
+def test_effects_key_is_absent_for_ordinary_compatible_job(job_factory):
+    assert "effects" not in compile_fixture(job_factory)["outputs"][0]

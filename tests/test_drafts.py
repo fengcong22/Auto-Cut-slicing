@@ -227,6 +227,28 @@ def test_write_refuses_existing_destination_without_worker(saved_draft, monkeypa
         write_draft(plan, "out", root.parent)
 
 
+@pytest.mark.parametrize("kind", ["mute", "freeze_frame"])
+def test_draft_rejects_mp4_effects_before_creating_directory_or_loading_runtime(
+    saved_draft, monkeypatch, kind
+):
+    root, plan, _ = saved_draft
+    output = plan["outputs"][0]
+    output["name"] = "new-effect-draft"
+    output["effects"] = [{
+        "kind": kind, "item_id": "c1/effect", "clip_id": "c1", "source_id": "src",
+        "source_text": "仅MP4效果", "source_start_us": 0, "source_end_us": 100_000,
+        "target_start_us": 0, "duration_us": 100_000,
+    }]
+    monkeypatch.setattr("auto_cut_slicing.media.verify_sources", lambda plan: None)
+    monkeypatch.setattr(
+        "auto_cut_slicing.drafts.load_config", lambda: pytest.fail("runtime must not load")
+    )
+    destination = root.parent / "no-side-effects"
+    with pytest.raises(SlicingError, match="MP4-only effects"):
+        write_draft(plan, "out", destination)
+    assert not destination.exists()
+
+
 def test_dependency_checks_identity_before_revision_and_source_cleanliness(tmp_path, monkeypatch):
     from auto_cut_slicing import upstream
 

@@ -92,6 +92,133 @@ def _descriptor(value: Any, path: Path) -> dict[str, Any]:
     return result
 
 
+def _resolve_word_request(row, source, clip_start, clip_end, item_id):
+    if "alignment" not in source:
+        raise SlicingError(f"Speech operation {item_id} requires source-bound ASR")
+    rough = None
+    if "rough_time" in row:
+        rough = parse_time_us(row["rough_time"], field="rough_time")
+    radius = parse_time_us(row.get("search_radius", 30), field="search_radius")
+    return resolve_word_deletion(
+        source["alignment"],
+        row.get("text"),
+        clip_start_us=clip_start,
+        clip_end_us=clip_end,
+        rough_time_us=rough,
+        search_radius_us=radius,
+        must_keep=row.get("must_keep", []),
+    )
+
+
+def _clip_effects(clip, source, clip_id, source_id, nominal_start, clip_start, clip_end, seen):
+    effects = []
+    for value in _rows(clip.get("edits", []), "edits", allow_empty=True):
+        row = _object(value, "edit")
+        edit_id = _unique_id(row.get("id"), "edit ID", seen)
+        item_id = f"{clip_id}/{edit_id}"
+        source_text = row.get("source_text")
+        if not isinstance(source_text, str) or not source_text.strip():
+            raise SlicingError(f"Edit {item_id} requires exact nonempty source_text")
+        kind = row.get("kind")
+        if kind == "mute_word":
+            _known_keys(
+                row,
+                {"id", "kind", "text", "rough_time", "search_radius", "must_keep", "source_text"},
+                "mute_word edit",
+            )
+            resolved = _resolve_word_request(row, source, clip_start, clip_end, item_id)
+            start, end = resolved["source_start_us"], resolved["source_end_us"]
+            detail = {
+                **resolved,
+                "requested_text": row["text"],
+                "resolved_source_start_us": start,
+                "resolved_source_end_us": end,
+            }
+            effect_kind = "mute"
+        elif kind == "freeze_frame":
+            _known_keys(
+                row,
+                {"id", "kind", "start", "end", "frame_time", "source_text"},
+                "freeze_frame edit",
+            )
+            start, end = _range(row, source["duration_us"], f"edit {item_id}")
+            detail = {}
+            if "start_cue" in clip and start == nominal_start:
+                detail = {"requested_start_us": start, "resolved_start_us": clip_start}
+                start = clip_start
+            if start >= end or start < clip_start or end > clip_end:
+                raise SlicingError(f"Edit {item_id} is outside its selected clip or empty")
+            frame = parse_time_us(row.get("frame_time"), field=f"edit {item_id} frame_time")
+            if frame >= source["duration_us"]:
+                raise SlicingError(f"Edit {item_id} frame_time must be inside the complete source")
+            detail["frame_time_us"] = frame
+            effect_kind = "freeze_frame"
+        else:
+            raise SlicingError(f"Unknown edit kind for {item_id}: {kind}")
+        effects.append({
+            **detail,
+            "kind": effect_kind,
+            "item_id": item_id,
+            "clip_id": clip_id,
+            "source_id": source_id,
+            "source_text": source_text,
+            "source_start_us": start,
+            "source_end_us": end,
+        })
+    effects.sort(key=lambda row: (row["source_start_us"], row["source_end_us"], row["item_id"]))
+    previous_by_kind = {}
+    for effect in effects:
+        if effect["source_start_us"] < previous_by_kind.get(effect["kind"], clip_start):
+            raise SlicingError(f"Overlapping {effect['kind']} effects in clip {clip_id}")
+        previous_by_kind[effect["kind"]] = effect["source_end_us"]
+    return effects
+
+
+def _protect_audio_operations(deletions, effects):
+    operations = [*deletions, *(row for row in effects if row["kind"] == "mute")]
+    for operation in operations:
+        for owner in operations:
+            for protected in owner["must_keep_evidence"]:
+                for match in protected["matches"]:
+                    if (
+                        match["source_start_us"] < operation["source_end_us"]
+                        and match["source_end_us"] > operation["source_start_us"]
+                    ):
+                        raise SlicingError(
+                            f"Edit {operation['item_id']} overlaps must_keep protected by {owner['item_id']}"
+                        )
+
+
+def _map_effects(output, effects, segments):
+    for effect in effects:
+        fragments = []
+        for segment in segments:
+            start = max(effect["source_start_us"], segment["source_start_us"])
+            end = min(
+                effect["source_end_us"], segment["source_start_us"] + segment["duration_us"]
+            )
+            if start < end:
+                fragments.append({
+                    **effect,
+                    "source_start_us": start,
+                    "source_end_us": end,
+                    "target_start_us": segment["target_start_us"] + start - segment["source_start_us"],
+                    "duration_us": end - start,
+                })
+        if not fragments:
+            raise SlicingError(f"Effect {effect['item_id']} has no retained source interval")
+        output.setdefault("effects", []).extend(fragments)
+        output["markers"].append({
+            "item_id": effect["item_id"],
+            "source_text": effect["source_text"],
+            "source_id": effect["source_id"],
+            "source_start_us": effect["source_start_us"],
+            "source_end_us": effect["source_end_us"],
+            "target_start_us": fragments[0]["target_start_us"],
+            "execution_status": "executed",
+        })
+
+
 def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str, Any]:
     """Validate the complete job before producing any cut or draft artifact."""
     job_path = Path(job_path).resolve()
@@ -143,13 +270,32 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
         }
         for clip_value in _rows(output_row.get("clips"), f"output {output_id} clips"):
             clip = _object(clip_value, "clip")
-            _known_keys(clip, {"id", "source", "start", "end", "deletions"}, "clip")
+            _known_keys(
+                clip, {"id", "source", "start", "end", "deletions", "start_cue", "edits"}, "clip"
+            )
             clip_id = _unique_id(clip.get("id"), "clip ID", seen_clips)
             source_id = _identity(clip.get("source"), "clip source")
             if source_id not in sources:
                 raise SlicingError(f"Clip {clip_id} references unknown source: {source_id}")
             source = sources[source_id]
             clip_start, clip_end = _range(clip, source["duration_us"], f"clip {clip_id}")
+            nominal_start = clip_start
+            if "start_cue" in clip:
+                cue = _object(clip["start_cue"], "start_cue")
+                _known_keys(cue, {"text", "search_radius"}, "start_cue")
+                cue_resolved = _resolve_word_request(
+                    {"text": cue.get("text"), "rough_time": clip["start"],
+                     "search_radius": cue.get("search_radius", 3)},
+                    source, 0, clip_end, f"{clip_id}/start_cue",
+                )
+                clip_start = cue_resolved["source_start_us"]
+                output.setdefault("start_cues", []).append({
+                    **cue_resolved,
+                    "clip_id": clip_id,
+                    "source_id": source_id,
+                    "requested_text": cue["text"],
+                    "requested_start_us": nominal_start,
+                })
             deletions = []
             seen_deletions: set[str] = set()
             for deletion_value in _rows(clip.get("deletions", []), "deletions", allow_empty=True):
@@ -227,23 +373,18 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
             deletions.sort(
                 key=lambda row: (row["source_start_us"], row["source_end_us"], row["item_id"])
             )
+            effects = _clip_effects(
+                clip, source, clip_id, source_id, nominal_start, clip_start, clip_end, seen_deletions
+            )
             previous_end = clip_start
             for deletion in deletions:
                 if deletion["source_start_us"] < previous_end:
                     raise SlicingError(f"Overlapping deletion requests in clip {clip_id}")
                 previous_end = deletion["source_end_us"]
-                for owner in deletions:
-                    for protected in owner["must_keep_evidence"]:
-                        for match in protected["matches"]:
-                            if (
-                                match["source_start_us"] < deletion["source_end_us"]
-                                and match["source_end_us"] > deletion["source_start_us"]
-                            ):
-                                raise SlicingError(
-                                    f"Deletion {deletion['item_id']} overlaps must_keep protected by {owner['item_id']}"
-                                )
+            _protect_audio_operations(deletions, effects)
             cursor = clip_start
             segment_number = 0
+            first_segment = len(output["segments"])
             for deletion in [*deletions, None]:
                 keep_end = deletion["source_start_us"] if deletion is not None else clip_end
                 if keep_end > cursor:
@@ -263,6 +404,7 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
                     deletion["target_join_us"] = output["duration_us"]
                     output["edits"].append(deletion)
                     cursor = deletion["source_end_us"]
+            _map_effects(output, effects, output["segments"][first_segment:])
             # A wholly removed clip intentionally has no retained segment.
         if output["duration_us"] <= 0:
             raise SlicingError(f"Output {output_id} is empty after deletion")
@@ -277,6 +419,10 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
                     "target_start_us": min(edit["target_join_us"], output["duration_us"] - 1),
                     "execution_status": "executed",
                 }
+            )
+        if "effects" in output:
+            output["effects"].sort(
+                key=lambda row: (row["target_start_us"], row["kind"], row["item_id"])
             )
         outputs.append(output)
     plan = {

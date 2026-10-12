@@ -105,7 +105,7 @@ def describe_source(path: str | Path) -> dict[str, Any]:
         if round((video_start - origin) * 1_000_000) > 1_000:
             raise SlicingError(
                 "Source video starts later than the container timeline; "
-                "delayed-video sources are unsupported in v0.1."
+                "delayed-video sources are unsupported in this version."
             )
         duration = _positive_number(metadata.get("format", {}).get("duration"))
         if duration is None:

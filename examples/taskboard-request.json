@@ -1,0 +1,33 @@
+{
+  "contract_version": 1,
+  "request_id": "taskboard-lesson-001",
+  "source": {
+    "id": "lesson-source",
+    "vmid": "video-001",
+    "path": "../tmp/input/lesson.mp4",
+    "asr": "../tmp/input/lesson.words.json"
+  },
+  "outputs": [
+    {
+      "id": "joined-ranges",
+      "name": "两段拼接",
+      "instruction": "0:00-2:31;2:34-结束",
+      "output_path": "../output/taskboard/joined-ranges.mp4"
+    },
+    {
+      "id": "spoken-join",
+      "name": "接下来起点拼接",
+      "source_text": "0:04-1:23 +1:31（接下来）-2:29",
+      "clips": [
+        {"id": "opening-part", "start": "00:04", "end": "01:23"},
+        {
+          "id": "next-part",
+          "start": "01:31",
+          "end": "02:29",
+          "start_cue": {"text": "接下来", "search_radius": 3}
+        }
+      ],
+      "output_path": "../output/taskboard/spoken-join.mp4"
+    }
+  ]
+}

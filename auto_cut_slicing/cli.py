@@ -9,8 +9,13 @@ from .errors import SlicingError
 from .io import write_json, write_new_json
 
 
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise SlicingError(message)
+
+
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(
+    root = JsonArgumentParser(
         prog="auto-cut-slicing", description="视频切片、拼接、删词和删段落"
     )
     commands = root.add_subparsers(dest="command", required=True)
@@ -39,10 +44,37 @@ def parser() -> argparse.ArgumentParser:
     render.add_argument("job", type=Path)
     render.add_argument("--output-id", required=True)
     render.add_argument("--output", required=True, type=Path)
+    run = commands.add_parser("run", help="Taskboard 批量 MP4；单条失败后继续其他成片")
+    run.add_argument("request", type=Path)
+    run.add_argument("--result", required=True, type=Path)
+    run.add_argument("--resume", action="store_true")
+    visual = commands.add_parser("inspect-freeze", help="分析选帧之后的画面变化边界候选")
+    visual.add_argument("source", type=Path)
+    visual.add_argument("--frame-time", required=True)
+    visual.add_argument("--end")
     return root
 
 
 def dispatch(args) -> dict:
+    if args.command == "run":
+        from .batch import run_request
+
+        return run_request(args.request, args.result, resume=args.resume)
+    if args.command == "inspect-freeze":
+        from .alignment import parse_time_us
+        from .visual import analyze_freeze
+
+        # CLI timestamps follow the same seconds/clock rules as jobs.
+        def seconds(value):
+            try:
+                value = float(value)
+            except ValueError:
+                pass
+            return parse_time_us(value) / 1_000_000
+
+        return {"ok": True, **analyze_freeze(
+            args.source, seconds(args.frame_time), end=seconds(args.end) if args.end else None
+        )}
     if args.command == "configure":
         from .upstream import load_config, validate_upstream
 
@@ -150,11 +182,22 @@ def dispatch(args) -> dict:
 
 
 def main(argv=None) -> int:
-    args = parser().parse_args(argv)
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    batch_command = arguments[:1] == ["run"]
+    if batch_command and hasattr(sys.stdout, 'reconfigure'):
+        # Taskboard consumes UTF-8 JSON even when the Windows host defaults to a code page.
+        sys.stdout.reconfigure(encoding='utf-8')
     try:
+        args = parser().parse_args(arguments)
         result = dispatch(args)
-    except (SlicingError, OSError, ValueError, KeyError) as error:
-        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), file=sys.stderr)
+    except (SlicingError, OSError, ValueError, KeyError, TypeError) as error:
+        if batch_command:
+            from .batch import error_receipt
+
+            result = {"ok": False, "status": "failed", "error": error_receipt(error)}
+        else:
+            result = {"ok": False, "error": str(error)}
+        print(json.dumps(result, ensure_ascii=False), file=sys.stdout if batch_command else sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
-    return 0
+    return 0 if result.get("ok", True) else 1
