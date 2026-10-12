@@ -4,6 +4,17 @@
 默认产品为可编辑剪映草稿；明确选择 Taskboard MP4 通道时，直接生成 **1920×1080、25 fps** 成片，
 按原比例缩放并补边。单条失败会记录原因并继续其他输出。
 
+## 项目级剪辑经验
+
+开始每次剪辑或返修前，阅读 [剪辑经验与交付准则](docs/editing-standards.md)，交付前执行
+[实际剪辑交付清单](docs/validation.md#实际剪辑交付清单)。已确认的删词、就近完整语音切入、
+末句补全、干净画面定格、语义停顿、PMO 一源多成片和命名规则均按此沿用。
+具体选帧、词界和停顿时长仍按本次源素材复核。
+
+`AGENTS.md` 和剪辑技能均指向该准则，新会话无需重新提供历史聊天。
+技能的版本化源文件为 `skills/auto-cut-slicing/SKILL.md`；修改后运行
+`python scripts/install_repo_skills.py` 刷新本仓库 `.codex/skills/` 中的安装副本。
+
 ## 本机开发
 
 Python 3.10–3.12，FFmpeg / FFprobe 在 PATH 中可用。
@@ -32,7 +43,9 @@ python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/task
 
 每条输出选择 `instruction` 或有稳定 ID 的有序 `clips`，生成独立 MP4。
 支持 `0:00-2:31;2:34-结束`、`0:04-1:23 +1:31（接下来）-2:29` 等保守指令格式。
-新请求默认 `boundary_policy: "sentence"`：普通数字起点落在句内时退到句首，终点落在句内时延至句末。
+新请求默认 `boundary_policy: "sentence"`。规划器对普通数字起点做句首回退、对句内终点做句末补全，
+但实际剪辑起点须按上述准则围绕标注时间复核：优先就近完整词/短语，用 `start_cue` 固化，
+避免为凑整句带入前面的引入语。约 1 秒是复核提示，不是截词硬限值，也不是结尾延长上限。
 句内词尾或停顿也会补全当前句；完整句边界与句间空隙保持原坐标。显式语音起点仍从指定词开始。
 除源文件首尾外，待解析句边界需要源哈希绑定、含有效 `utterances` 的 ASR 证据；缺失时失败，不猜边界。
 需要严格数字范围时在请求或单个结构化 clip 中设置 `boundary_policy: "exact"`。

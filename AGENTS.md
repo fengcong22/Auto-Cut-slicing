@@ -3,6 +3,10 @@
 This is the independent `auto-cut-slicing` source repository. The primary branch is `main`.
 Develop on `codex/*`, `feature/*` or `fix/*` branches. It is not an Auto-Cut Lite workspace.
 
+- Before planning or revising real-media edits, read [project editing standards](docs/editing-standards.md)
+  and use the delivery checklist in [validation](docs/validation.md). These apply to future tasks;
+  current explicit user requirements take precedence. Preserve confirmed feedback as reusable rules,
+  with sample-specific timings kept as examples rather than universal defaults.
 - This workflow makes real ripple edits: deleting words or paragraphs reduces output duration.
   Keep complete source files; expose each retained range as an editable video/audio segment.
 - Independent slices and ordered multi-source concatenation share one maintained planner.
