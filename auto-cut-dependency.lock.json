@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "repository": "auto-cut-lite",
+  "mode": "source_checkout",
+  "revision": "82921cc561631d6af3b6254849e17c1f6817514e",
+  "primary_branch": "main",
+  "interfaces": ["scripts/vendor/pyJianYingDraft", "scripts/audio/volc_word_align.py"],
+  "workflow_reuse": false
+}
