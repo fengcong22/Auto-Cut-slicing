@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "视频切片示例",
+  "sources": [
+    {"id": "talk", "path": "../tmp/input/talk.mp4", "asr": "../tmp/input/talk.words.json"},
+    {"id": "broll", "path": "../tmp/input/broll.mp4"}
+  ],
+  "outputs": [
+    {
+      "id": "slice_01",
+      "name": "独立切片01",
+      "clips": [
+        {
+          "id": "opening",
+          "source": "talk",
+          "start": "00:10",
+          "end": "00:30",
+          "deletions": [
+            {"id": "filler", "kind": "word", "text": "就是说", "rough_time": 15, "search_radius": 3, "must_keep": ["核心观点"], "source_text": "00:15 删除“就是说”，保留“核心观点”"},
+            {"id": "paragraph", "kind": "range", "start": "00:20", "end": "00:24", "source_text": "00:20–00:24 删除重复段落"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "montage",
+      "name": "拼接成片",
+      "clips": [
+        {"id": "detail", "source": "broll", "start": 0, "end": 5},
+        {"id": "main_point", "source": "talk", "start": "00:30", "end": "00:45"},
+        {"id": "ending", "source": "talk", "start": "01:00", "end": "01:08"}
+      ]
+    }
+  ]
+}

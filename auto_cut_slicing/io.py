@@ -16,7 +16,9 @@ def file_sha256(path: str | Path) -> str:
 
 def json_sha256(value: Any) -> str:
     return hashlib.sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
     ).hexdigest()
 
 
@@ -36,4 +38,18 @@ def write_json(path: str | Path, value: Any) -> Path:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+    return path
+
+
+def write_new_json(path: str | Path, value: Any) -> Path:
+    """Publish a user-selected output without replacing any existing file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".new-json-", suffix=".json")
+    os.close(handle)
+    try:
+        write_json(temporary, value)
+        os.link(temporary, path)
+    finally:
+        os.unlink(temporary)
     return path
