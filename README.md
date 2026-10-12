@@ -36,6 +36,9 @@ python -m venv .venv
 [请求示例](examples/taskboard-request.json)。同一视频的 VMID 可以对应多个显示名称，所有输出复用同一
 `source.id` 和源文件。素材、指令及结果通过本地文件交接。
 
+Taskboard 的独立 `vm_pmo_review_video/v1` 草案与本地请求格式尚未接通，差异、职责和分阶段联调见
+[VM / PMO 接入对照](docs/taskboard-vm-pmo-integration.md)。
+
 ```powershell
 python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/taskboard-result.json
 python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/taskboard-result.json --resume
