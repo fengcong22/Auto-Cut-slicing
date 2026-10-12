@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .alignment import load_alignment, parse_time_us, protect_must_keep, resolve_word_deletion
+from .boundaries import resolve_sentence_range
 from .errors import SlicingError
 from .io import json_sha256, read_json
 
@@ -268,10 +269,11 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
             "markers": [],
             "edits": [],
         }
+        selected_ranges = []
         for clip_value in _rows(output_row.get("clips"), f"output {output_id} clips"):
             clip = _object(clip_value, "clip")
             _known_keys(
-                clip, {"id", "source", "start", "end", "deletions", "start_cue", "edits"}, "clip"
+                clip, {"id", "source", "start", "end", "deletions", "start_cue", "edits", "boundary_policy"}, "clip"
             )
             clip_id = _unique_id(clip.get("id"), "clip ID", seen_clips)
             source_id = _identity(clip.get("source"), "clip source")
@@ -279,7 +281,17 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
                 raise SlicingError(f"Clip {clip_id} references unknown source: {source_id}")
             source = sources[source_id]
             clip_start, clip_end = _range(clip, source["duration_us"], f"clip {clip_id}")
-            nominal_start = clip_start
+            nominal_start, nominal_end = clip_start, clip_end
+            policy = clip.get("boundary_policy", "exact")
+            if not isinstance(policy, str) or policy not in {"exact", "sentence"}:
+                raise SlicingError(f"Clip {clip_id} boundary_policy must be exact or sentence")
+            boundary = None
+            if policy == "sentence":
+                boundary = resolve_sentence_range(
+                    source.get("alignment"), start_us=clip_start, end_us=clip_end,
+                    duration_us=source["duration_us"], preserve_start="start_cue" in clip,
+                )
+                clip_start, clip_end = boundary["start_us"], boundary["end_us"]
             if "start_cue" in clip:
                 cue = _object(clip["start_cue"], "start_cue")
                 _known_keys(cue, {"text", "search_radius"}, "start_cue")
@@ -296,6 +308,43 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
                     "requested_text": cue["text"],
                     "requested_start_us": nominal_start,
                 })
+            if clip_start >= clip_end:
+                raise SlicingError(f"Clip {clip_id} is empty after resolving its boundaries")
+            sentence_expanded = boundary is not None and (
+                boundary["start_us"] < nominal_start or boundary["end_us"] > nominal_end
+            )
+            selected_start = clip_start if "start_cue" in clip else nominal_start
+            if boundary is not None:
+                output.setdefault("boundary_adjustments", []).append({
+                    "clip_id": clip_id, "source_id": source_id, "policy": policy,
+                    "requested_start_us": nominal_start, "requested_end_us": nominal_end,
+                    "resolved_start_us": clip_start, "resolved_end_us": clip_end,
+                    "evidence": boundary["evidence"],
+                })
+            # Only reject duplicate material introduced by semantic expansion.
+            # Explicitly overlapping source selections still represent intentional reuse.
+            for previous in selected_ranges:
+                if previous["source_id"] != source_id:
+                    continue
+                original_overlap = (
+                    selected_start < previous["selected_end"]
+                    and nominal_end > previous["selected_start"]
+                )
+                resolved_overlap = (
+                    clip_start < previous["end"] and clip_end > previous["start"]
+                )
+                expanded = sentence_expanded or previous["expanded"]
+                if resolved_overlap and not original_overlap and expanded:
+                    raise SlicingError(
+                        f"Sentence boundary expansion introduces overlap between clips "
+                        f"{previous['clip_id']} and {clip_id}; review the source selections"
+                    )
+            selected_ranges.append({
+                "source_id": source_id, "clip_id": clip_id,
+                "selected_start": selected_start, "selected_end": nominal_end,
+                "start": clip_start, "end": clip_end,
+                "expanded": sentence_expanded,
+            })
             deletions = []
             seen_deletions: set[str] = set()
             for deletion_value in _rows(clip.get("deletions", []), "deletions", allow_empty=True):

@@ -61,8 +61,13 @@ def load_alignment(path: Path, source: dict[str, Any]) -> dict[str, Any]:
     """Validate a word manifest against the currently selected complete source."""
     path = Path(path).resolve()
     try:
+        alignment_hash = file_sha256(path)
         raw = read_json(path)
+        if file_sha256(path) != alignment_hash:
+            raise SlicingError("ASR alignment changed while reading source-bound evidence")
     except (OSError, ValueError) as exc:
+        if isinstance(exc, SlicingError):
+            raise
         raise SlicingError(f"Cannot read ASR alignment: {path}") from exc
     if (
         not isinstance(raw, dict)
@@ -97,7 +102,7 @@ def load_alignment(path: Path, source: dict[str, Any]) -> dict[str, Any]:
         previous_end = end
     result = {
         "path": str(path),
-        "sha256": file_sha256(path),
+        "sha256": alignment_hash,
         "source_sha256": digest.lower(),
         **identities,
         "words": words,

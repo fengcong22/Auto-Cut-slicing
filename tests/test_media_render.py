@@ -109,6 +109,44 @@ def make_plan(sources: dict, segments: list[tuple[str, int, int]]) -> dict:
     }
 
 
+def test_sentence_completed_range_renders_full_picture_and_audio(videos, tmp_path):
+    from auto_cut_slicing.planner import compile_job
+
+    source = videos['first']
+    words = [
+        {'text': '完整', 'start': 0.2, 'end': 0.6},
+        {'text': '句子', 'start': 1, 'end': 1.8},
+    ]
+    asr = tmp_path / 'sentences.json'
+    asr.write_text(json.dumps({
+        'schema_version': 1, 'source_sha256': source['sha256'],
+        'provider': 'synthetic-fixture', 'model': 'synthetic-fixture',
+        'adapter': 'synthetic-fixture', 'words': words,
+        'utterances': [{'text': '完整句子。', 'start': 0.2, 'end': 1.8, 'words': words}],
+    }, ensure_ascii=False), encoding='utf-8')
+    job = tmp_path / 'sentence-job.json'
+    job.write_text(json.dumps({
+        'schema_version': 1, 'name': 'sentence-render',
+        'sources': [{'id': 's', 'path': source['path'], 'asr': str(asr)}],
+        'outputs': [{'id': 'out', 'clips': [{
+            'id': 'c', 'source': 's', 'start': 0.4, 'end': 1.2, 'boundary_policy': 'sentence',
+        }]}],
+    }), encoding='utf-8')
+    plan = compile_job(job)
+    assert plan['outputs'][0]['duration_us'] == 1_600_000
+    destination = tmp_path / 'sentence-completed.mp4'
+    receipt = render_output(plan, 'out', destination, width=160, height=90, fps=25)
+    assert abs(receipt['duration_us'] - 1_600_000) <= 40_000
+    assert receipt['has_audio']
+    actual = describe_source(destination)
+    assert actual['has_audio'] and abs(actual['duration_us'] - 1_600_000) <= 40_000
+    # Compare the new opening/ending pictures against the expanded source interval.
+    for target, original in [(0, 0.2), (1.56, 1.76)]:
+        left, right = rgb_frame(destination, target), rgb_frame(source['path'], original)
+        assert len(left) == len(right)
+        assert sum(abs(a - b) for a, b in zip(left, right)) / len(left) < 5
+
+
 def rgb_frame(path: str | Path, seconds: float) -> bytes:
     return subprocess.run(
         [

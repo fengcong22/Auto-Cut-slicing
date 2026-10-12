@@ -32,8 +32,13 @@ python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/task
 
 每条输出选择 `instruction` 或有稳定 ID 的有序 `clips`，生成独立 MP4。
 支持 `0:00-2:31;2:34-结束`、`0:04-1:23 +1:31（接下来）-2:29` 等保守指令格式。
+新请求默认 `boundary_policy: "sentence"`：普通数字起点落在句内时退到句首，终点落在句内时延至句末。
+句内词尾或停顿也会补全当前句；完整句边界与句间空隙保持原坐标。显式语音起点仍从指定词开始。
+除源文件首尾外，待解析句边界需要源哈希绑定、含有效 `utterances` 的 ASR 证据；缺失时失败，不猜边界。
+需要严格数字范围时在请求或单个结构化 clip 中设置 `boundary_policy: "exact"`。
 结果 JSON 保存成功/失败、原始指令、源文件和成片哈希、计划、时长及解码验收。
 只有全部成功时退出码为 0。已有 MP4 拒绝覆盖；恢复需要匹配请求和已记录的成功证据。
+句边界补全造成的新片段重叠在渲染前报错；原本明确重叠的选取仍可用于重复素材。
 
 普通删词同时移除画面和声音，后续时间轴前移；明确“剪掉声音”则只静音精确词区间，时长不变。
 “首先”“接下来”等语音起点使用源哈希绑定的 ASR 精确定位，数字时间只作为搜索锚点。
@@ -43,6 +48,7 @@ python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/task
 ## 可编辑草稿与单条导出
 
 原有 [任务格式](docs/job-format.md) 和 [草稿示例](examples/slicing-job.json) 保持兼容。
+底层任务 clip 未声明边界策略时仍使用 `exact`；缺少策略的旧 Taskboard 回执也按 `exact` 恢复，保留原计划哈希。
 草稿保留完整源素材，并将每段保留范围写为可编辑、同步的 V1/A1 片段。
 静音与定格属于 MP4 专用效果，草稿入口会明确拒绝。
 
@@ -57,7 +63,8 @@ python -m auto_cut_slicing render examples/slicing-job.json --output-id montage 
 
 草稿和真实词级 ASR 通过锁定版本的 Auto-Cut Lite 源码桥接复用；本机路径仅写入 `.local/config.json`。
 桥接先验证 Lite 身份、提交和源码清洁状态。纯范围规划、画面分析及 MP4 渲染使用本地 Python 和 FFmpeg。
-示例中的素材路径为占位，执行前须准备真实素材；需要语音操作时还须准备匹配源文件的词级 ASR。
+示例中的素材路径为占位，执行前须准备真实素材；语音操作及 Taskboard 默认的句边界解析还须准备匹配源文件的 ASR。
+`exact` 的纯范围任务无需 ASR。ASR 句末标点是边界候选证据，实际语音完整性仍需试听验收。
 
 [验收说明](docs/validation.md) 区分结构/真实媒体回归与实际语音试听、画面语义、剪映打开验收。
 维护规则见 [AGENTS.md](AGENTS.md)，依赖边界见 [架构说明](docs/architecture.md)。

@@ -58,11 +58,24 @@ def _path(value, base, label):
     return (base / Path(value).expanduser()).resolve()
 
 
-def _needs_alignment(clips):
+def _boundary_policy(value, label, *, code='INVALID_REQUEST'):
+    if not isinstance(value, str) or value not in ('sentence', 'exact'):
+        raise ContractError(code, f'{label} must be sentence or exact')
+    return value
+
+
+def _needs_alignment(clips, duration_us):
+    from .alignment import parse_time_us
+
     for clip in clips:
         if not isinstance(clip, dict):
             continue
         if clip.get('start_cue'):
+            return True
+        if clip.get('boundary_policy') == 'sentence' and (
+            parse_time_us(clip.get('start'), field='clip start') != 0
+            or parse_time_us(clip.get('end'), field='clip end') != duration_us
+        ):
             return True
         for operation in clip.get('deletions', []) + clip.get('edits', []):
             if isinstance(operation, dict) and (
@@ -72,7 +85,7 @@ def _needs_alignment(clips):
     return False
 
 
-def _compile_output(row, source, descriptor, base, temporary):
+def _compile_output(row, source, descriptor, base, temporary, *, default_boundary_policy='exact'):
     from .instructions import parse_instruction
     from .planner import compile_job
 
@@ -96,10 +109,14 @@ def _compile_output(row, source, descriptor, base, temporary):
         if not isinstance(clip, dict):
             raise ContractError('INVALID_OUTPUT', 'Each clip must be an object')
         clip.setdefault('source', source['id'])
+        if 'boundary_policy' not in clip and default_boundary_policy == 'sentence':
+            clip['boundary_policy'] = 'sentence'
     source_row = {'id': source['id'], 'path': str(_path(source['path'], base, 'source path'))}
-    if _needs_alignment(clips):
+    if _needs_alignment(clips, descriptor['duration_us']):
         if not source.get('asr'):
-            raise ContractError('ASR_REQUIRED', 'Speech cues and word edits require source-bound ASR')
+            raise ContractError(
+                'ASR_REQUIRED', 'Sentence boundaries, speech cues and word edits require source-bound ASR'
+            )
         source_row['asr'] = str(_path(source['asr'], base, 'ASR path'))
     output = {'id': row['id'], 'name': row['id'], 'clips': clips}
     job = {'schema_version': 1, 'name': 'Taskboard MP4', 'sources': [source_row], 'outputs': [output]}
@@ -156,6 +173,8 @@ def _resume_rows(previous, request_id, request_hash, output_ids):
     for row in rows:
         if row.get('status') not in {'pending', 'ready', 'complete', 'failed'}:
             raise ContractError('RESUME_MISMATCH', 'Saved result output status is invalid')
+        if 'boundary_policy' in row:
+            _boundary_policy(row['boundary_policy'], 'Saved result boundary_policy', code='RESUME_MISMATCH')
         completion = row.get('completion_receipt')
         if completion is not None and not isinstance(completion, dict):
             raise ContractError('RESUME_MISMATCH', 'Saved result completion receipt is invalid')
@@ -173,10 +192,11 @@ def run_request(request_path, result_path, *, resume=False):
     request_path = Path(request_path).resolve()
     result_path = Path(result_path).resolve()
     request = read_json(request_path)
-    _keys(request, {'contract_version', 'request_id', 'source', 'outputs'}, 'request')
+    _keys(request, {'contract_version', 'request_id', 'source', 'outputs', 'boundary_policy'}, 'request')
     if type(request.get('contract_version')) is not int or request['contract_version'] != 1:
         raise ContractError('INVALID_REQUEST', 'contract_version must be 1')
     request_id = _identity(request.get('request_id'), 'request_id')
+    default_boundary_policy = _boundary_policy(request.get('boundary_policy', 'sentence'), 'boundary_policy')
     source = request.get('source')
     _keys(source, {'id', 'path', 'asr', 'vmid'}, 'source')
     _identity(source.get('id'), 'source.id')
@@ -191,6 +211,11 @@ def run_request(request_path, result_path, *, resume=False):
     ids = [_identity(row.get('id'), 'output.id') for row in outputs if isinstance(row, dict)]
     if len(ids) != len(outputs) or len(set(ids)) != len(ids):
         raise ContractError('INVALID_REQUEST', 'Outputs must be objects with unique stable IDs')
+    for row in outputs:
+        if isinstance(row.get('clips'), list):
+            for clip in row['clips']:
+                if isinstance(clip, dict) and 'boundary_policy' in clip:
+                    _boundary_policy(clip['boundary_policy'], 'clip boundary_policy')
     destinations = []
     path_errors = {}
     for index, row in enumerate(outputs):
@@ -225,14 +250,17 @@ def run_request(request_path, result_path, *, resume=False):
         'ok': False, 'status': 'in_progress', 'outputs': [],
     }
     for row, destination in zip(outputs, destinations):
+        old = previous_rows.get(row['id'], {})
         saved = {
             'output_id': row['id'], 'name': row.get('name', row['id']), 'status': 'pending',
             'source_text': row.get('instruction', row.get('source_text', '')),
             'path': str(destination) if destination else None,
+            # Persist the effective default before compilation, including failed first runs.
+            # Receipts predating this field retain their historical exact-range semantics.
+            'boundary_policy': old.get('boundary_policy', 'exact') if previous else default_boundary_policy,
         }
         if 'clips' in row:
             saved['clips'] = copy.deepcopy(row['clips'])
-        old = previous_rows.get(row['id'], {})
         completion = old.get('completion_receipt')
         if completion is None and old.get('status') == 'complete':
             completion = {key: value for key, value in old.items() if key != 'completion_receipt'}
@@ -258,12 +286,16 @@ def run_request(request_path, result_path, *, resume=False):
                     raise ContractError('INVALID_OUTPUT', 'Output destination must end in .mp4')
                 if descriptor_error:
                     raise descriptor_error
-                plan = _compile_output(row, source, descriptor, base, Path(work))
+                plan = _compile_output(
+                    row, source, descriptor, base, Path(work),
+                    default_boundary_policy=saved['boundary_policy'],
+                )
                 saved['plan_sha256'] = plan['plan_sha256']
                 saved['edits'] = plan['outputs'][0]['edits']
                 saved['effects'] = plan['outputs'][0].get('effects', [])
                 saved['segments'] = plan['outputs'][0]['segments']
                 saved['start_cues'] = plan['outputs'][0].get('start_cues', [])
+                saved['boundary_adjustments'] = plan['outputs'][0].get('boundary_adjustments', [])
                 saved['expected_duration_us'] = plan['outputs'][0]['duration_us']
                 prepared[index] = plan
                 saved['status'] = 'ready'

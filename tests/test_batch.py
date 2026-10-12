@@ -23,6 +23,7 @@ def batch_request(tmp_path):
     ], check=True, capture_output=True)
     request = {
         'contract_version': 1, 'request_id': 'batch-001',
+        'boundary_policy': 'exact',
         'source': {'id': 'source', 'path': source.name},
         'outputs': [{
             'id': 'good', 'instruction': '0:00-0:00.32',
@@ -192,7 +193,7 @@ def test_resume_preserves_completed_evidence_across_transient_compile_failure(
     first = batch.run_request(path, receipt)
     original_compile = batch._compile_output
 
-    def unavailable(*args):
+    def unavailable(*args, **kwargs):
         raise SlicingError('Temporary alignment file unavailable')
 
     monkeypatch.setattr(batch, '_compile_output', unavailable)
@@ -305,6 +306,7 @@ def test_source_bound_cue_ripple_mute_and_freeze_deliver_one_verified_mp4(tmp_pa
     }
     request = write_json(tmp_path / 'request.json', {
         'contract_version': 1, 'request_id': 'effects-fixture',
+        'boundary_policy': 'exact',
         'source': {'id': 's1', 'vmid': 'same-vmid', 'path': source.name, 'asr': 'fixture.words.json'},
         'outputs': [{'id': 'effects', 'name': '效果测试', 'clips': [clip], 'output_path': 'effects.mp4'}],
     })
@@ -409,3 +411,205 @@ def test_resume_rechecks_source_after_full_output_decode(batch_request, tmp_path
     result = run_request(path, receipt, resume=True)
     assert not result['ok']
     assert result['outputs'][0]['error']['code'] == 'SOURCE_CHANGED'
+
+
+def _sentence_alignment(source, path):
+    # Explicitly synthetic word and utterance evidence, bound to actual source bytes.
+    words = [
+        {'text': '完整', 'start': .12, 'end': .24},
+        {'text': '句子', 'start': .32, 'end': .48},
+    ]
+    return write_json(path, {
+        'schema_version': 1, 'source_sha256': file_sha256(source),
+        'provider': 'synthetic-test-fixture', 'model': 'synthetic', 'adapter': 'fixture-v1',
+        'words': words,
+        'utterances': [{'text': '完整句子。', 'start': .12, 'end': .48, 'words': words}],
+    })
+
+
+def test_default_sentence_policy_renders_complete_utterance(batch_request, tmp_path):
+    from auto_cut_slicing.batch import run_request
+
+    path, request, source = batch_request
+    request.pop('boundary_policy')
+    request['source']['asr'] = 'sentence.words.json'
+    request['outputs'][0]['instruction'] = '0:00.2-0:00.3'
+    _sentence_alignment(source, tmp_path / 'sentence.words.json')
+    write_json(path, request)
+    result = run_request(path, tmp_path / 'result.json')
+    assert result['ok'], result
+    output = result['outputs'][0]
+    assert output['boundary_policy'] == 'sentence'
+    assert output['expected_duration_us'] == 360_000
+    assert [(row['source_start_us'], row['duration_us']) for row in output['segments']] == [
+        (120_000, 360_000),
+    ]
+    adjustment = output['boundary_adjustments'][0]
+    assert (adjustment['requested_start_us'], adjustment['requested_end_us'],
+            adjustment['resolved_start_us'], adjustment['resolved_end_us']) == (
+        200_000, 300_000, 120_000, 480_000,
+    )
+    assert [(row['side'], row['requested_us'], row['resolved_us'])
+            for row in adjustment['evidence']] == [
+        ('start', 200_000, 120_000), ('end', 300_000, 480_000),
+    ]
+    assert output['full_decode_passed'] and not output['spoken_final_acceptance']
+
+
+def test_default_sentence_policy_is_saved_before_failed_compile_and_resume(
+    batch_request, tmp_path, monkeypatch
+):
+    from auto_cut_slicing import batch
+
+    path, request, source = batch_request
+    request.pop('boundary_policy')
+    request['source']['asr'] = 'sentence.words.json'
+    request['outputs'][0]['instruction'] = '0:00.2-0:00.3'
+    write_json(path, request)
+    receipt = tmp_path / 'result.json'
+    compile_output = batch._compile_output
+
+    def compile_with_pending_receipt(*args, **kwargs):
+        pending = read_json(receipt)['outputs'][0]
+        assert pending['status'] == 'pending'
+        assert pending['boundary_policy'] == 'sentence'
+        return compile_output(*args, **kwargs)
+
+    monkeypatch.setattr(batch, '_compile_output', compile_with_pending_receipt)
+    failed = batch.run_request(path, receipt)
+    assert failed['status'] == 'failed'
+    assert failed['outputs'][0]['boundary_policy'] == 'sentence'
+    assert failed['outputs'][0]['error']['code'] in {'ASR_REQUIRED', 'ASR_INVALID'}
+    _sentence_alignment(source, tmp_path / 'sentence.words.json')
+    recovered = batch.run_request(path, receipt, resume=True)
+    assert recovered['ok'], recovered
+    assert recovered['outputs'][0]['boundary_policy'] == 'sentence'
+    assert recovered['outputs'][0]['expected_duration_us'] == 360_000
+
+
+def test_default_sentence_policy_fails_without_asr_before_output_publication(
+    batch_request, tmp_path
+):
+    from auto_cut_slicing.batch import run_request
+
+    path, request, _ = batch_request
+    request.pop('boundary_policy')
+    write_json(path, request)
+    result = run_request(path, tmp_path / 'result.json')
+    assert not result['ok']
+    assert result['outputs'][0]['boundary_policy'] == 'sentence'
+    assert result['outputs'][0]['error']['code'] == 'ASR_REQUIRED'
+    assert not (tmp_path / '成片/good.mp4').exists()
+
+
+def test_default_sentence_policy_allows_complete_container_without_asr(batch_request, tmp_path):
+    from auto_cut_slicing.batch import run_request
+
+    path, request, _ = batch_request
+    request.pop('boundary_policy')
+    request['outputs'][0]['instruction'] = '0:00-0:01'
+    write_json(path, request)
+    result = run_request(path, tmp_path / 'result.json')
+    assert result['ok'], result
+    assert result['outputs'][0]['boundary_policy'] == 'sentence'
+    assert result['outputs'][0]['expected_duration_us'] == 1_000_000
+    adjustment = result['outputs'][0]['boundary_adjustments'][0]
+    assert (adjustment['requested_start_us'], adjustment['resolved_start_us'],
+            adjustment['requested_end_us'], adjustment['resolved_end_us']) == (
+        0, 0, 1_000_000, 1_000_000,
+    )
+    assert adjustment['evidence'] == []
+
+
+@pytest.mark.parametrize('request_policy, clip_policy', [
+    ('sentence', 'exact'), ('exact', 'sentence'),
+])
+def test_clip_boundary_policy_overrides_request_default(
+    batch_request, tmp_path, request_policy, clip_policy
+):
+    from auto_cut_slicing.batch import run_request
+
+    path, request, source = batch_request
+    request['boundary_policy'] = request_policy
+    request['source']['asr'] = 'sentence.words.json'
+    request['outputs'][0].pop('instruction')
+    request['outputs'][0]['clips'] = [{
+        'id': 'c1', 'start': .2, 'end': .3, 'boundary_policy': clip_policy,
+    }]
+    _sentence_alignment(source, tmp_path / 'sentence.words.json')
+    write_json(path, request)
+    result = run_request(path, tmp_path / 'result.json')
+    assert result['ok'], result
+    expected = 100_000 if clip_policy == 'exact' else 360_000
+    assert result['outputs'][0]['expected_duration_us'] == expected
+
+
+@pytest.mark.parametrize('policy', [None, True, 1, [], {}, 'Sentence', 'unknown'])
+@pytest.mark.parametrize('scope', ['request', 'clip'])
+def test_invalid_boundary_policy_rejected_before_result_write(
+    batch_request, tmp_path, policy, scope
+):
+    from auto_cut_slicing.batch import ContractError, run_request
+
+    path, request, _ = batch_request
+    if scope == 'request':
+        request['boundary_policy'] = policy
+    else:
+        request['outputs'][0].pop('instruction')
+        request['outputs'][0]['clips'] = [{
+            'id': 'c1', 'start': 0, 'end': .32, 'boundary_policy': policy,
+        }]
+    write_json(path, request)
+    receipt = tmp_path / 'result.json'
+    with pytest.raises(ContractError) as captured:
+        run_request(path, receipt)
+    assert captured.value.code == 'INVALID_REQUEST'
+    assert not receipt.exists()
+    assert not (tmp_path / '成片/good.mp4').exists()
+
+
+@pytest.mark.parametrize('legacy_status', ['pending', 'failed'])
+def test_legacy_incomplete_receipt_resumes_with_exact_policy(
+    batch_request, tmp_path, legacy_status
+):
+    from auto_cut_slicing.batch import run_request
+    from auto_cut_slicing.io import json_sha256
+
+    path, request, _ = batch_request
+    request.pop('boundary_policy')
+    write_json(path, request)
+    receipt = write_json(tmp_path / 'result.json', {
+        'contract_version': 1, 'request_id': request['request_id'],
+        'request_sha256': json_sha256(request), 'source_sha256': None,
+        'ok': False, 'status': 'failed',
+        'outputs': [{'output_id': 'good', 'status': legacy_status}],
+    })
+    result = run_request(path, receipt, resume=True)
+    assert result['ok'], result
+    assert result['outputs'][0]['boundary_policy'] == 'exact'
+    assert result['outputs'][0]['expected_duration_us'] == 320_000
+
+
+def test_legacy_complete_receipt_reuses_same_plan_hash_without_sentence_default(
+    batch_request, tmp_path
+):
+    from auto_cut_slicing.batch import run_request
+    from auto_cut_slicing.io import json_sha256
+
+    path, request, _ = batch_request
+    receipt = tmp_path / 'result.json'
+    first = run_request(path, receipt)
+    assert first['ok'], first
+    output_path = tmp_path / '成片/good.mp4'
+    original_mtime = output_path.stat().st_mtime_ns
+    request.pop('boundary_policy')
+    write_json(path, request)
+    legacy = read_json(receipt)
+    legacy['request_sha256'] = json_sha256(request)
+    legacy['outputs'][0].pop('boundary_policy', None)
+    write_json(receipt, legacy)
+    result = run_request(path, receipt, resume=True)
+    assert result['ok'], result
+    assert result['outputs'][0]['boundary_policy'] == 'exact'
+    assert result['outputs'][0]['plan_sha256'] == first['outputs'][0]['plan_sha256']
+    assert output_path.stat().st_mtime_ns == original_mtime
