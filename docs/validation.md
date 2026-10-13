@@ -143,3 +143,19 @@
 
 这些结果证明本次边界证据、实际渲染和自动复核通过；本轮未完成人工试听、目标应用打开
 或 Taskboard 宿主联调，`manual_listening_verified` 与 `spoken_final_acceptance` 保持 false。
+
+## VM / PMO v1 离线适配开发记录 · 2026-10-13
+
+新增独立 `python -m auto_cut_slicing.vm_pmo plan/render` 入口，首版仅接受 initial 阶段、
+无 parent、单条当前轮 `vm_original` 纯确切时间范围意见。未知操作、多意见、审核轮次、
+身份或文件变化均阻断，并在回执中保留原意见；包不访问飞书或 VM 凭据。
+
+最终完整回归：`python -m pytest -q --basetemp .local/test-vm-pmo-final --tb=short`，
+320 项通过（317.10 秒）。VM 定向回归 20 项通过，覆盖真实 FFmpeg 合成媒体、
+严格 schema / profile、输入和计划字节绑定、无覆盖发布、路径范围和硬链接拒绝。
+外部 ffconcat 清单在 plan 和 render 阶段均有阻断回归；VM 源每次探测与渲染固定为
+MOV/MP4 解复用、仅 file 协议和禁止外部 data reference，既有通用 CLI 默认行为保持兼容。
+
+Taskboard 到真实剪辑包的离线合成媒体联调已通过，输出按 1920×1080 / 25 fps 及完整解码校验。
+这些结果只证明离线协议与媒体处理；真实审批下载、受控 task/run、审核 parent、PMO 附件上传
+和附件读回尚未验收。包身份和工作流声明未在本轮改变，仍仅供配置预览。

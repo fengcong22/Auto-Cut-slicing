@@ -5,8 +5,8 @@
 
 对照来源为 Taskboard 仓库中的
 `docs/superpowers/specs/2026-10-09-vm-pmo-review-video-interface-draft.md`、
-`examples/vm-pmo-review-video-preview/README.md` 及当前工作区代码；该工作区包含尚未提交的开发内容，
-执行接入前须重新检查接口版本。剪辑包现行行为见 [本地 MP4 契约](taskboard-contract.md)，
+`examples/vm-pmo-review-video-preview/README.md` 及当前工作区代码；执行接入前须重新检查
+已验收代码与安装运行时的接口版本。剪辑包现行行为见 [本地 MP4 契约](taskboard-contract.md)，
 已验收编辑判断见 [剪辑经验与交付准则](editing-standards.md)。
 
 ## 已核实的接入条件
@@ -25,14 +25,14 @@ VM 下载能力已经独立存在，但尚未与本轮 task/run、审核成片�
 
 | 范围 | 剪辑包当前实现 | 接入需要补充 |
 | --- | --- | --- |
-| 入口 | 本地 `run request.json --result result.json`；另有独立 `python -m auto_cut_slicing.vm_pmo plan/render` 离线入口 | Taskboard 专用 runner、生产资格与超时/取消接入；不得复用 Lite ZIP runner。 |
-| 身份 | `request_id`、source、多个 outputs | 冻结 package、task/run、record、stage/event、review_round、parent、delivery_target 并回传。 |
-| 路径 | 请求直接指定本地源、ASR 与输出路径 | 由受信 context 提供准确路径映射，校验受控目录、输入/输出冲突与素材只读。 |
-| 计划 | 统一 planner 输出 segments、edits、effects、cues 和哈希 | 保留每项原意见及 resolved/needs_confirmation/unsupported 状态，任何未解决要求阻断 render。 |
-| 成片结果 | 多 outputs 的成功/失败、时长、哈希、格式及解码回执 | 每个受控运行对应一个准确的 review_mp4，增加文件大小、完整流信息和业务绑定。 |
-| 状态与退出码 | complete/partial_failure/failed，失败返回 1 | 新协议独立实现 ready/blocked 与 rendered/blocked/failed；合法回执和成功成片分别判断。 |
-| 坐标 | 内部微秒 | 草案使用整数毫秒；固定转换规则及舍入证据，不能影响词界精度或改变已有协议。 |
-| 恢复 | 请求、源、计划、成片哈希匹配后恢复 | 加入本轮身份保护；rendered 与 delivered 分开，上传重试复用已验证成片。 |
+| 入口 | 本地 `run` 保持兼容；独立 VM `plan/render` 与 Taskboard 专用离线 runner 已联调，宿主使用固定 argv 并处理 timeout/cancel。 | 接入受控来源、生产资格和自动调度；不得复用 Lite ZIP runner。 |
+| 身份 | VM v1 已冻结并回传 package、task/run、record、stage/event、review_round、delivery_target；首版 initial、parent 为 null。宿主逐项校验。 | 将离线身份接入真实任务与配置快照，增加审核 parent 及跨轮次保护。 |
+| 路径 | VM v1 由受信 context 提供绝对路径，固定 input/context 文件名；宿主和包校验运行目录、路径冲突和文件链接边界。 | 接通获批素材采集与受控目录，管理生产素材生命周期。 |
+| 计划 | VM v1 保留原意见、resolved/blocked 状态、有序毫秒 segments 与原字节哈希；render 重新编译并核对计划和 ready 回执。 | 扩展源绑定语音/视觉证据及带证据编辑；未解决要求继续阻断。 |
+| 成片结果 | VM 每轮唯一 review_mp4，回传身份、大小、时长、格式、哈希及完整解码；宿主独立检查回执与实际 MP4。 | 接通附件上传、token 持久化与绑定读回，完成业务交付。 |
+| 状态与退出码 | VM v1 已实现 ready/blocked 与 rendered/blocked/failed；宿主分别验证退出码、回执状态和实际成片。旧 run 状态不变。 | 增加生产审批等待、任务阶段和 delivered 状态的持久化编排。 |
+| 坐标 | VM v1 使用整数毫秒并严格转换为引擎微秒，首版只接受毫秒对齐的确切范围。 | 带证据编辑扩展须保留词界精度和舍入证据，审核轮次明确坐标基准。 |
+| 恢复 | 离线输入、源、计划和回执均绑定本轮身份与哈希；已有目标无覆盖，变更或未知结果阻断。 | 接入生产恢复队列，将 rendered 与 delivered 分开，上传重试复用已验证成片。 |
 
 ## 以用户已确认要求为准的差异
 
@@ -68,15 +68,16 @@ VM 下载能力已经独立存在，但尚未与本轮 task/run、审核成片�
 
 以下为独立阶段，每阶段提交可复核的契约、样例和测试结果，再接下一层。
 
-1. **冻结一份可运行的最小协议样例（已完成离线包侧）。** 确定 input/context/plan/plan-result/result 的完整字段、
+1. **冻结一份可运行的最小协议样例（已完成双方离线联调）。** 确定 input/context/plan/plan-result/result 的完整字段、
    required、版本、错误码、路径边界及退出码；使用本地 fixture，单源、单成片、有序 keep_segments、
    原音和 1080p25。参数命名和 result.status 必须由双方读取同一份样例验证。
 2. **剪辑包适配（最小范围已完成）。** 独立模块入口 `python -m auto_cut_slicing.vm_pmo`，
    从 context 将本轮素材与证据转换为统一 planner 输入。plan 固化原字节哈希和有序片段，
    render 复核输入/源/计划后渲染并原子发布，回传唯一 MP4；原有本地 v1 保持兼容。
-3. **能力声明与宿主调用。** 在已提供的 `.codex-plugin/plugin.json` 和 `PACKAGE-MANIFEST.json` 上
-   补充经适配验收的能力声明。Taskboard 新增 `vm_pmo_review_video_v1` 专用 runner 与独立结果校验，
-   使用注册的运行时和固定 argv，接入 timeout/cancel；不借用 Lite ZIP runner。
+3. **宿主离线调用已完成，生产资格与调度待接入。** Taskboard 已实现 `vm_pmo_review_video_v1`
+   专用 runner、身份和 context 路径校验、计划/回执状态校验及独立 MP4 验证；使用固定 argv 并处理
+   timeout/cancel，不借用 Lite ZIP runner。后续接入受控来源登记、本机执行开关、白名单、
+   获批素材绑定与自动调度；验收这些生产条件后，才在现有包声明上增加相应执行能力。
 4. **带证据的编辑扩展。** 定义源绑定 ASR/utterances、cue 和视觉证据映射，逐项接入现有删词、静音、
    静帧和句末补全能力。第一阶段未承接的要求保持 blocked，不能只裁剪就报成功。
 5. **轮次与附件交付。** Taskboard 接通获批素材与受控任务绑定、明确 parent 选择、附件追加/token 恢复、
@@ -87,7 +88,7 @@ VM 下载能力已经独立存在，但尚未与本轮 task/run、审核成片�
 `auto_cut_slicing/vm_pmo_adapter.py`（转换与结果映射），对应独立协议、CLI 和真实媒体测试。
 当前适配实现集中在 `auto_cut_slicing/vm_pmo.py`，测试见 `tests/test_vm_pmo.py`；完整带证据编辑仍待扩展。
 
-Taskboard 侧涉及新 runner、run-input/result 校验、轮次与交付队列，宜按独立子项目实施。
+Taskboard 已完成离线 runner 与 run-input/result 校验；生产资格/调度、轮次与交付队列仍按独立子项目实施。
 生产启用前须同步其根 AGENTS、README 与测试中的完成条件：旧流程唯一 ZIP 发布，
 新流程 MP4 附件读回确认。不能只删除 `PACKAGE_WORKFLOW_NOT_READY` 就认为接入完成。
 
@@ -108,4 +109,5 @@ Taskboard 侧涉及新 runner、run-input/result 校验、轮次与交付队列�
 剪辑包已经具备本地视频的保留/拼接、精确删词、静音、静帧和语义边界能力；旧入口仍是 `python -m auto_cut_slicing run request.json --result result.json`。
 独立 VM/PMO 离线入口仅接受单条纯确切时间范围意见；超出能力的意见会阻断。Taskboard 宿主与真实包的离线合成媒体联调已通过，下一步是扩展带证据的意见、审核轮次以及受控生产编排。
 请以 1080p25 输出、静帧覆盖到动画恢复、PMO 成片命名字段为准同步宿主契约；
-Taskboard 继续负责素材、轮次、执行资格和附件交付。完整 schema/fixture 冻结后再启用真实调用。
+Taskboard 继续负责素材、轮次、执行资格和附件交付。离线 schema/fixture 已冻结并通过双方联调；
+真实调用须等受控生产资格、审批下载绑定、所需编辑能力与审核轮次、附件读回及阶段回写在测试表验收后启用。
