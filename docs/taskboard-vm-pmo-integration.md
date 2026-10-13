@@ -1,6 +1,6 @@
 # Taskboard VM / PMO 接入对照与联调方案
 
-日期：2026-10-12。状态：接口对照完成，独立 VM/PMO 协议及宿主执行尚未实现。
+日期：2026-10-12；2026-10-13 补齐包声明。状态：身份读取与配置预览可用，独立 VM/PMO 协议及宿主执行尚未实现。
 本文是开发交接材料，不是已冻结的 JSON schema，也不表示 Taskboard 已可启用此包。
 
 对照来源为 Taskboard 仓库中的
@@ -18,7 +18,10 @@ Taskboard 的 `taskboard/server/autocut-local-runner.mjs` 使用固定参数数�
 VM 模板在 `taskboard/shared/feishu-package-workflow.mjs` 中被明确阻断执行，
 `taskboard/server/feishu-package-workflow-drafts.mjs` 只提供配置草稿。
 VM 下载能力已经独立存在，但尚未与本轮 task/run、审核成片身份、MP4 上传交付串联。
-预览示例只有包身份声明，不含执行器。剪辑包当前也没有 Taskboard 要求的两份包身份文件。
+预览示例只有包身份声明，不含执行器。剪辑包已补齐
+[plugin.json](../.codex-plugin/plugin.json) 和 [PACKAGE-MANIFEST.json](../PACKAGE-MANIFEST.json)，
+可识别为 `auto-cut-slicing` `0.2.0`、VM/PMO v1 并保存配置草稿；未声明嵌入运行时或执行能力。
+实际宿主检查应返回 `runtimeVersion: null`，启用继续以 `PACKAGE_WORKFLOW_NOT_READY` 阻断。
 
 | 范围 | 剪辑包当前实现 | 接入需要补充 |
 | --- | --- | --- |
@@ -71,8 +74,8 @@ VM 下载能力已经独立存在，但尚未与本轮 task/run、审核成片�
 2. **剪辑包适配。** 新增独立模块入口（建议 `python -m auto_cut_slicing.vm_pmo`），
    从 context 将本轮素材与证据转换为统一 planner 输入。plan 固化原字节哈希和有序片段，
    render 复核输入/源/计划后渲染并原子发布，回传唯一 MP4；原有本地 v1 保持兼容。
-3. **能力声明与宿主调用。** 提供 `.codex-plugin/plugin.json` 和 `PACKAGE-MANIFEST.json`，
-   只声明已验收能力。Taskboard 新增 `vm_pmo_review_video_v1` 专用 runner 与独立结果校验，
+3. **能力声明与宿主调用。** 在已提供的 `.codex-plugin/plugin.json` 和 `PACKAGE-MANIFEST.json` 上
+   补充经适配验收的能力声明。Taskboard 新增 `vm_pmo_review_video_v1` 专用 runner 与独立结果校验，
    使用注册的运行时和固定 argv，接入 timeout/cancel；不借用 Lite ZIP runner。
 4. **带证据的编辑扩展。** 定义源绑定 ASR/utterances、cue 和视觉证据映射，逐项接入现有删词、静音、
    静帧和句末补全能力。第一阶段未承接的要求保持 blocked，不能只裁剪就报成功。
