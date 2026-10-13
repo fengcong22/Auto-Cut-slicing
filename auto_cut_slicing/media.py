@@ -41,7 +41,15 @@ def _run(arguments: list[str], *, purpose: str) -> subprocess.CompletedProcess[s
     return result
 
 
-def _probe(path: Path) -> dict[str, Any]:
+def _input_options(input_demuxer: str | None = None) -> list[str]:
+    if input_demuxer is None:
+        return []
+    if input_demuxer != 'mov':
+        raise SlicingError('Unsupported restricted input demuxer.')
+    return ['-protocol_whitelist', 'file', '-f', 'mov', '-enable_drefs', '0']
+
+
+def _probe(path: Path, *, input_demuxer: str | None = None) -> dict[str, Any]:
     result = _run(
         [
             find_tool("ffprobe"),
@@ -51,6 +59,7 @@ def _probe(path: Path) -> dict[str, Any]:
             "-show_format",
             "-of",
             "json",
+            *_input_options(input_demuxer),
             str(path),
         ],
         purpose="Media probe",
@@ -84,12 +93,12 @@ def _start_time(value: Any, fallback: float = 0.0) -> float:
     return number
 
 
-def describe_source(path: str | Path) -> dict[str, Any]:
+def describe_source(path: str | Path, *, input_demuxer: str | None = None) -> dict[str, Any]:
     source = Path(path).expanduser().resolve()
     if not source.is_file():
         raise SlicingError(f"Source video does not exist or is not a file: {source}")
     try:
-        metadata = _probe(source)
+        metadata = _probe(source) if input_demuxer is None else _probe(source, input_demuxer=input_demuxer)
         streams = metadata.get("streams", [])
         videos = [
             stream
@@ -150,14 +159,15 @@ def describe_source(path: str | Path) -> dict[str, Any]:
         raise SlicingError(f"Could not inspect source video {source}: {exc}") from exc
 
 
-def verify_sources(plan: dict[str, Any]) -> None:
+def verify_sources(plan: dict[str, Any], *, input_demuxer: str | None = None) -> None:
     sources = plan.get("sources")
     if not isinstance(sources, dict) or not sources:
         raise SlicingError("The edit plan has no source inventory.")
     for source_id, expected in sources.items():
         if not isinstance(expected, dict) or not expected.get("path"):
             raise SlicingError(f"Invalid source inventory entry: {source_id}")
-        actual = describe_source(expected["path"])
+        actual = (describe_source(expected["path"]) if input_demuxer is None else
+                  describe_source(expected["path"], input_demuxer=input_demuxer))
         if actual["sha256"] != expected.get("sha256"):
             raise SlicingError(f"Source bytes changed since planning: {source_id}")
         for field in ("duration_us", "width", "height", "has_audio"):

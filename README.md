@@ -35,14 +35,16 @@ python -m venv .venv
 在 Taskboard「新增 Auto-Cut 包」中选择本仓库目录后，点击「验证并读取」可读取
 [包身份](.codex-plugin/plugin.json) 和 [工作流声明](PACKAGE-MANIFEST.json)，识别为
 `auto-cut-slicing` 版本 `0.2.0`、`vm_pmo_review_video` v1，并保存配置草稿。
-声明不包含嵌入运行时，运行核心版本为空；当前 VM/PMO 执行适配尚未接通，启用仍返回
+声明不包含嵌入运行时，运行核心版本为空；当前 VM/PMO 生产执行编排尚未接通，启用仍返回
 `PACKAGE_WORKFLOW_NOT_READY`。包声明中的版本需与 `pyproject.toml` 和 Python 包版本同步。
 
 按 [Taskboard 契约](docs/taskboard-contract.md) 填写本地请求，参考
 [请求示例](examples/taskboard-request.json)。同一视频的 VMID 可以对应多个显示名称，所有输出复用同一
 `source.id` 和源文件。素材、指令及结果通过本地文件交接。
 
-Taskboard 的独立 `vm_pmo_review_video/v1` 草案与本地请求格式尚未接通，差异、职责和分阶段联调见
+独立 VM/PMO v1 本机 `plan` / `render` 入口已支持单条纯确切时间范围意见的离线联调，
+协议见 [VM / PMO 离线剪辑协议](docs/vm-pmo-offline-contract-v1.md)。包声明仍只用于配置预览；
+Taskboard 生产执行、审批下载和 PMO 附件交付尚未启用。跨系统差异见
 [VM / PMO 接入对照](docs/taskboard-vm-pmo-integration.md)。
 
 ```powershell

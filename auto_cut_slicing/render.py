@@ -9,7 +9,15 @@ from typing import Any
 
 from .errors import SlicingError
 from .io import file_sha256
-from .media import _positive_number, _probe, _run, describe_source, find_tool, verify_sources
+from .media import (
+    _input_options,
+    _positive_number,
+    _probe,
+    _run,
+    describe_source,
+    find_tool,
+    verify_sources,
+)
 
 
 def _integer(value: Any, field: str, *, positive: bool = False) -> int:
@@ -177,6 +185,7 @@ def _concat_list(path: Path, files: list[Path]) -> None:
 def render_output(
     plan: dict[str, Any], output_id: str, destination: str | Path,
     *, width: int | None = None, height: int | None = None, fps: float | None = None,
+    input_demuxer: str | None = None,
 ) -> dict[str, Any]:
     """Render one selected output and publish only after decoding and duration checks."""
     target = Path(destination).expanduser().absolute()
@@ -184,7 +193,10 @@ def render_output(
         raise SlicingError(f"Refusing to overwrite existing output: {target}")
     if target.suffix.lower() != ".mp4":
         raise SlicingError("The optional video export destination must end in .mp4.")
-    verify_sources(plan)
+    if input_demuxer is None:
+        verify_sources(plan)
+    else:
+        verify_sources(plan, input_demuxer=input_demuxer)
     output = _validate_output(plan, output_id)
     ffmpeg = find_tool("ffmpeg")
     first = plan["sources"][output["segments"][0]["source_id"]]
@@ -223,6 +235,7 @@ def render_output(
                 "-n",
                 "-ss",
                 f"{segment['source_start_us'] / 1_000_000:.6f}",
+                *_input_options(input_demuxer),
                 "-i",
                 source["path"],
             ]
@@ -249,6 +262,7 @@ def render_output(
                     arguments += ["-noaccurate_seek"]
                 arguments += [
                     "-ss", f"{float(video_start_us / 1_000_000):.6f}",
+                    *_input_options(input_demuxer),
                     "-i", source["path"],
                 ]
                 video_input = "1:v:0"
@@ -385,7 +399,10 @@ def render_output(
             purpose="Full output decode acceptance",
         )
         # Recheck immediately before publishing so changed inputs cannot receive a success receipt.
-        verify_sources(plan)
+        if input_demuxer is None:
+            verify_sources(plan)
+        else:
+            verify_sources(plan, input_demuxer=input_demuxer)
         try:
             os.link(candidate, target)
         except FileExistsError as exc:
