@@ -307,6 +307,8 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
                     "source_id": source_id,
                     "requested_text": cue["text"],
                     "requested_start_us": nominal_start,
+                    "search_end_us": nominal_end,
+                    "search_radius_us": parse_time_us(cue.get("search_radius", 3), field="start_cue search_radius"),
                 })
             if clip_start >= clip_end:
                 raise SlicingError(f"Clip {clip_id} is empty after resolving its boundaries")

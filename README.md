@@ -1,6 +1,6 @@
 # Auto-Cut Slicing · 视频切片剪辑包
 
-`0.2.0` 独立视频切片工作流：多条独立输出、指定顺序拼接、精确删词和删段落。
+`0.3.0` 独立视频切片工作流：多条独立输出、指定顺序拼接、精确删词和删段落。
 默认产品为可编辑剪映草稿；明确选择 Taskboard MP4 通道时，直接生成 **1920×1080、25 fps** 成片，
 按原比例缩放并补边。单条失败会记录原因并继续其他输出。
 
@@ -34,18 +34,23 @@ python -m venv .venv
 
 在 Taskboard「新增 Auto-Cut 包」中选择本仓库目录后，点击「验证并读取」可读取
 [包身份](.codex-plugin/plugin.json) 和 [工作流声明](PACKAGE-MANIFEST.json)，识别为
-`auto-cut-slicing` 版本 `0.2.0`、`vm_pmo_review_video` v1，并保存配置草稿。
-声明不包含嵌入运行时，运行核心版本为空；当前 VM/PMO 生产执行编排尚未接通，启用仍返回
-`PACKAGE_WORKFLOW_NOT_READY`。包声明中的版本需与 `pyproject.toml` 和 Python 包版本同步。
+`auto-cut-slicing` 版本 `0.3.0`、`vm_pmo_review_video` 配置模板 v1 / 执行协议 v2，并保存配置草稿。
+声明不包含嵌入运行时，运行核心版本为空；Taskboard 使用自身的本机 VM runtime 调用该包，审核启用还会校验
+v2 contract、固定 driver、Python 路径和实时 Base 字段。包声明本身不授予执行资格，必须通过 Taskboard 的受控
+Bridge 登记、自动执行策略和配置激活。包声明中的版本需与 `pyproject.toml` 和 Python 包版本同步。
 
 按 [Taskboard 契约](docs/taskboard-contract.md) 填写本地请求，参考
 [请求示例](examples/taskboard-request.json)。同一视频的 VMID 可以对应多个显示名称，所有输出复用同一
 `source.id` 和源文件。素材、指令及结果通过本地文件交接。
 
-独立 VM/PMO v1 本机 `plan` / `render` 入口已支持单条纯确切时间范围意见的离线联调，
-协议见 [VM / PMO 离线剪辑协议](docs/vm-pmo-offline-contract-v1.md)。包声明仍只用于配置预览；
-Taskboard 生产执行、审批下载和 PMO 附件交付尚未启用。跨系统差异见
-[VM / PMO 接入对照](docs/taskboard-vm-pmo-integration.md)。
+VM/PMO v1 仍冻结为 initial 纯确切时间范围协议；v2 本机 `plan` / `render` 增加由明确 parent
+MP4 开始的审核轮次，并接入源哈希绑定的删词/语音 cue 规划。需要词级证据时由剪辑包读取本机已配置
+的 ASR 连接生成并复用时间戳；ASR 不可用、词语匹配不唯一或证据与 parent 哈希不符时阻断。
+协议见 [VM / PMO v1](docs/vm-pmo-offline-contract-v1.md) 和
+[VM / PMO v2](docs/vm-pmo-offline-contract-v2.md)。Taskboard v2 已接入初稿审批下载、审核 parent/轮次、
+MP4 校验、附件追加读回和阶段写回；离线合成素材验证覆盖多轮审核和语义证据阻断。真实测试表的审批、
+附件更新及最终归档仍须单独验收。跨系统运行方式见
+[VM / PMO 联调](../feishu-codex-Taskboard-main/docs/vm-pmo-offline-integration.md)。
 
 ```powershell
 python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/taskboard-result.json
