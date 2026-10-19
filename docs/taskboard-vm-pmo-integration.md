@@ -2,7 +2,7 @@
 
 更新时间：2026-10-15。Taskboard 与 `auto-cut-slicing` 的 VM/PMO v2 生产路径已接通，并通过合成媒体离线联调。真实测试记录上的审批、PMO 附件读回和 NAS 归档尚未验收；离线结果不代表这些外部效果已通过。
 
-跨系统协议见 [VM / PMO v1](vm-pmo-offline-contract-v1.md) 和 [VM / PMO v2](vm-pmo-offline-contract-v2.md)。Taskboard 的运行与真实测试表步骤见 [VM / PMO 离线联调](../../feishu-codex-Taskboard-main/docs/vm-pmo-offline-integration.md)。
+跨系统协议见 [VM / PMO v1](vm-pmo-offline-contract-v1.md) 和 [VM / PMO v2](vm-pmo-offline-contract-v2.md)。Taskboard 项目见 [feishu-codex-Taskboard](https://github.com/fengcong22/feishu-codex-Taskboard)。
 
 ## 工作流
 
