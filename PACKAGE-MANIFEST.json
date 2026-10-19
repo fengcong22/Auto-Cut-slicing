@@ -1,10 +1,10 @@
 {
   "name": "auto-cut-slicing",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "interface": {
     "workflowTemplate": { "id": "vm_pmo_review_video", "version": 1 },
-    "contract": { "id": "vm_pmo_review_video", "version": 1 },
-    "driverId": "vm_pmo_review_video_v1",
+    "contract": { "id": "vm_pmo_review_video", "version": 2 },
+    "driverId": "vm_pmo_review_video_v2",
     "artifactKind": "review_mp4"
   }
 }

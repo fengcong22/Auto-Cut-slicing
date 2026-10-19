@@ -2,7 +2,7 @@
   "schema_version": 1,
   "repository": "auto-cut-lite",
   "mode": "source_checkout",
-  "revision": "82921cc561631d6af3b6254849e17c1f6817514e",
+  "revision": "44d137dcdeded2421ec8d12ec5e6d145efa784d7",
   "primary_branch": "main",
   "interfaces": [
     "scripts/jy_wrapper.py",

@@ -1,6 +1,6 @@
 # VM / PMO 离线剪辑协议 v1
 
-本协议只提供本机 `plan` / `render` 的离线联调能力，Taskboard 到真实包的合成媒体联调已通过。Taskboard 尚未启用生产执行、审批下载、审核轮次或 PMO 附件交付；包声明仍只表示配置预览。剪辑包不接触飞书和 VM 凭据。
+本协议定义 schema v1 的 initial/parentless 范围，仍由 Taskboard 初稿阶段兼容使用；它不支持审核 parent 或语义删词。Taskboard 的生产资格、审批下载、审核轮次和 PMO 附件交付由本机 Bridge/Taskboard v2 workflow 单独控制。剪辑包本身始终只执行本地 `plan` / `render`，不接触飞书和 VM 凭据。
 
 ```powershell
 python -m auto_cut_slicing.vm_pmo plan --input C:\run\input.json --context C:\run\execution-context.json
@@ -17,7 +17,7 @@ python -m auto_cut_slicing.vm_pmo render --input C:\run\input.json --context C:\
 {
   "protocol": "vm_pmo_review_video",
   "schema_version": 1,
-  "package": {"alias": "slicing", "name": "auto-cut-slicing", "version": "0.2.0", "manifest_sha256": "PACKAGE-MANIFEST.json 文件字节的 64 位小写 SHA-256"},
+  "package": {"alias": "slicing", "name": "auto-cut-slicing", "version": "0.3.0", "manifest_sha256": "PACKAGE-MANIFEST.json 文件字节的 64 位小写 SHA-256"},
   "binding": {"task_id": "task-1", "run_id": "run-1", "subject_key": "subject-1", "config_version": "config-1", "stage_id": "initial", "event_id": "event-1"},
   "record": {"base_token": "base-1", "table_id": "table-1", "record_id": "record-1"},
   "review_round": {"round_id": "round-1", "input_snapshot_id": "snapshot-1", "parent": null},

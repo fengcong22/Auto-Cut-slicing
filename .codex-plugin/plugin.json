@@ -1,5 +1,5 @@
 {
   "name": "auto-cut-slicing",
-  "version": "0.2.0",
-  "description": "独立视频切片剪辑包；支持本地草稿和 MP4，Taskboard VM / PMO 接入目前仅支持配置预览。"
+  "version": "0.3.0",
+  "description": "独立视频切片剪辑包；支持本地草稿、MP4 和 Taskboard VM / PMO v2 离线审核剪辑协议。"
 }
