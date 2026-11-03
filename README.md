@@ -62,6 +62,7 @@ python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/task
 新请求默认 `boundary_policy: "sentence"`。规划器对普通数字起点做句首回退、对句内终点做句末补全，
 但实际剪辑起点须按上述准则围绕标注时间复核：优先就近完整词/短语，用 `start_cue` 固化，
 避免为凑整句带入前面的引入语。约 1 秒是复核提示，不是截词硬限值，也不是结尾延长上限。
+同时定位语音和画面时，词级语音起点与画面源时间须在 0.5 秒内对齐，规划回执保留差值。
 句内词尾或停顿也会补全当前句；完整句边界与句间空隙保持原坐标。显式语音起点仍从指定词开始。
 除源文件首尾外，待解析句边界需要源哈希绑定、含有效 `utterances` 的 ASR 证据；缺失时失败，不猜边界。
 需要严格数字范围时在请求或单个结构化 clip 中设置 `boundary_policy: "exact"`。

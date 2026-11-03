@@ -6,12 +6,13 @@ from typing import Any, Callable
 
 from .alignment import load_alignment, parse_time_us, protect_must_keep, resolve_word_deletion
 from .boundaries import resolve_sentence_range
-from .errors import SlicingError
+from .errors import SlicingError, VisualSpeechSyncError
 from .io import json_sha256, read_json
 
 _UNSAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DEVICE_NAME = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?\Z", re.I)
 _HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
+VISUAL_SYNC_TOLERANCE_US = 500_000
 
 
 def _object(value: Any, field: str) -> dict[str, Any]:
@@ -294,21 +295,58 @@ def compile_job(job_path: Path, *, describe: Callable | None = None) -> dict[str
                 clip_start, clip_end = boundary["start_us"], boundary["end_us"]
             if "start_cue" in clip:
                 cue = _object(clip["start_cue"], "start_cue")
-                _known_keys(cue, {"text", "search_radius"}, "start_cue")
-                cue_resolved = _resolve_word_request(
-                    {"text": cue.get("text"), "rough_time": clip["start"],
-                     "search_radius": cue.get("search_radius", 3)},
-                    source, 0, clip_end, f"{clip_id}/start_cue",
+                _known_keys(cue, {"text", "search_radius", "visual_anchor"}, "start_cue")
+                visual_anchor_us = None
+                if "visual_anchor" in cue:
+                    visual_anchor_us = parse_time_us(
+                        cue["visual_anchor"], field="start_cue visual_anchor"
+                    )
+                    if visual_anchor_us >= source["duration_us"]:
+                        raise SlicingError("start_cue visual_anchor is outside the source")
+                search_radius_us = parse_time_us(
+                    cue.get("search_radius", 0.5 if visual_anchor_us is not None else 3),
+                    field="start_cue search_radius",
                 )
+                if visual_anchor_us is not None and search_radius_us > VISUAL_SYNC_TOLERANCE_US:
+                    raise VisualSpeechSyncError(
+                        "start_cue search radius exceeds the visual sync tolerance"
+                    )
+                try:
+                    cue_resolved = _resolve_word_request(
+                        {"text": cue.get("text"),
+                         "rough_time": cue["visual_anchor"] if visual_anchor_us is not None
+                         else clip["start"],
+                         "search_radius": search_radius_us / 1_000_000},
+                        source, 0, clip_end, f"{clip_id}/start_cue",
+                    )
+                except SlicingError as error:
+                    if visual_anchor_us is None or source.get("alignment") is None:
+                        raise
+                    raise VisualSpeechSyncError(
+                        "start_cue speech cue does not align with visual anchor"
+                    ) from error
+                visual_sync = None
+                if visual_anchor_us is not None:
+                    sync_delta_us = abs(cue_resolved["source_start_us"] - visual_anchor_us)
+                    if sync_delta_us > VISUAL_SYNC_TOLERANCE_US:
+                        raise VisualSpeechSyncError(
+                            "start_cue speech cue does not align with visual anchor"
+                        )
+                    visual_sync = {
+                        "visual_anchor_us": visual_anchor_us,
+                        "visual_sync_tolerance_us": VISUAL_SYNC_TOLERANCE_US,
+                        "visual_sync_delta_us": sync_delta_us,
+                    }
                 clip_start = cue_resolved["source_start_us"]
                 output.setdefault("start_cues", []).append({
                     **cue_resolved,
+                    **(visual_sync or {}),
                     "clip_id": clip_id,
                     "source_id": source_id,
                     "requested_text": cue["text"],
                     "requested_start_us": nominal_start,
                     "search_end_us": nominal_end,
-                    "search_radius_us": parse_time_us(cue.get("search_radius", 3), field="start_cue search_radius"),
+                    "search_radius_us": search_radius_us,
                 })
             if clip_start >= clip_end:
                 raise SlicingError(f"Clip {clip_id} is empty after resolving its boundaries")

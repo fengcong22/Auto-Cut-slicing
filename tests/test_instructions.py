@@ -39,6 +39,23 @@ def test_first_speech_cue_is_supported():
     assert parse("3:50（首先）-6:05")[0]["start_cue"] == {"text": "首先"}
 
 
+def test_synchronized_speech_and_visual_start_cue_uses_range_start_as_visual_anchor():
+    clip = parse('5:23（语音是“咱们来总结”，画面从这里落黑板开始）-5:48')[0]
+    assert clip["start_cue"] == {"text": "咱们来总结", "visual_anchor": 323}
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        '语音是“咱们来总结”，画面从这里落黑板开始',
+        '语音是“咱们来总结”，画面同点',
+    ],
+)
+def test_synchronized_speech_and_visual_start_cue_rejects_unknown_picture_notes(note):
+    with pytest.raises(SlicingError):
+        parse(f'5:23（{note}，并叠加标题）-5:48')
+
+
 def test_standalone_deletion_retains_full_source_and_verbatim_instruction():
     raw = " 0:31 剪掉“上一章”三个字，其他不变\n"
     clip = parse(raw)[0]

@@ -316,6 +316,42 @@ def test_start_cue_requires_unique_exact_source_bound_word_evidence(job_factory)
     assert output["segments"][0]["source_start_us"] == 5_100_000
 
 
+def test_synchronized_start_cue_records_visual_anchor_and_timing_evidence(job_factory):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip.update(start=2, end=6, start_cue={"text": "首先", "visual_anchor": 2})
+
+    output = compile_fixture(job_factory, job, [("首先", 2.5, 2.8)])["outputs"][0]
+
+    cue = output["start_cues"][0]
+    assert cue["source_start_us"] == 2_500_000
+    assert cue["visual_anchor_us"] == 2_000_000
+    assert cue["visual_sync_tolerance_us"] == 500_000
+    assert cue["visual_sync_delta_us"] == 500_000
+
+
+def test_synchronized_start_cue_rejects_speech_outside_visual_tolerance(job_factory):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip.update(start=2, end=6, start_cue={"text": "首先", "visual_anchor": 2})
+
+    with pytest.raises(SlicingError, match="speech cue does not align with visual anchor"):
+        compile_fixture(job_factory, job, [("首先", 2.500001, 2.8)])
+
+
+def test_synchronized_start_cue_searches_only_near_the_visual_anchor(job_factory):
+    job, _, _ = job_factory()
+    clip = job["outputs"][0]["clips"][0]
+    clip.update(start=2, end=6, start_cue={"text": "首先", "visual_anchor": 2})
+
+    output = compile_fixture(
+        job_factory, job, [("首先", 2.4, 2.8), ("首先", 4.0, 4.4)]
+    )["outputs"][0]
+
+    assert output["segments"][0]["source_start_us"] == 2_400_000
+    assert output["start_cues"][0]["search_radius_us"] == 500_000
+
+
 @pytest.mark.parametrize("cue_start", [1.8, 2.4])
 def test_freeze_at_nominal_clip_start_follows_exact_cue_boundary(job_factory, cue_start):
     job, _, _ = job_factory()

@@ -26,6 +26,9 @@ _VISUAL = re.compile(
     rf"语音是\s*{_QUOTED}\s*配后面\s*\d+(?:\.\d+)?\s*(?:s|秒)"
     r"\s*只有\s*NaOH\s*的画面\s*\Z"
 )
+_SYNC_CUE = re.compile(
+    rf"语音是\s*{_QUOTED}\s*,\s*画面(?:从这里落黑板开始|同点)\s*\Z"
+)
 _HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
@@ -169,8 +172,13 @@ def parse_instruction(
         clip.update(start=_seconds(start_us), end=_seconds(end_us))
         if match["start_note"] is not None:
             note = match["start_note"].strip()
+            sync_cue = _SYNC_CUE.fullmatch(note)
             visual = _VISUAL.fullmatch(note)
-            if visual is not None:
+            if sync_cue is not None:
+                clip["start_cue"] = {
+                    "text": _phrase(sync_cue), "visual_anchor": _seconds(start_us),
+                }
+            elif visual is not None:
                 clip["start_cue"] = {"text": _phrase(visual)}
                 clip["edits"] = [_freeze(visual_evidence, text, start_us, end_us, duration_us)]
             elif note in {"首先", "接下来"}:

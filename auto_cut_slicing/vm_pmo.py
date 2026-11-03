@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from .alignment import load_alignment, parse_time_us
-from .errors import SlicingError
+from .errors import SlicingError, VisualSpeechSyncError
 from .instructions import parse_instruction
 from .io import file_sha256, read_json, write_json, write_new_json
 from .media import describe_source
@@ -434,6 +434,10 @@ def _review_engine_plan(input_data, source_path, descriptor, clips, run_dir, ali
         job_path = write_json(Path(temporary) / 'job.json', job)
         try:
             return compile_job(job_path, describe=lambda _: descriptor)
+        except VisualSpeechSyncError as error:
+            raise VmError(
+                'UNSUPPORTED_INSTRUCTION', 'Speech cue does not align with the visual anchor.'
+            ) from error
         except SlicingError as error:
             code = 'WORD_ALIGNMENT_UNRESOLVED' if alignment_path is not None else 'UNSUPPORTED_INSTRUCTION'
             message = ('Required source-bound word timing is ambiguous or invalid.'
@@ -445,7 +449,7 @@ def _review_engine_plan(input_data, source_path, descriptor, clips, run_dir, ali
 def _operation_rows(output):
     rows = []
     for cue in output.get('start_cues', []):
-        rows.append({
+        row = {
             'operation_id': f"{cue['clip_id']}/start_cue", 'kind': 'start_cue',
             'source_start_us': cue['source_start_us'],
             'source_end_us': cue['source_end_us'],
@@ -456,7 +460,11 @@ def _operation_rows(output):
             'match_strategy': cue['match_strategy'],
             'alignment_sha256': cue['alignment_sha256'],
             'provider': cue['provider'], 'model': cue['model'], 'adapter': cue['adapter'],
-        })
+        }
+        for field in ('visual_anchor_us', 'visual_sync_tolerance_us', 'visual_sync_delta_us'):
+            if field in cue:
+                row[field] = cue[field]
+        rows.append(row)
     for edit in output.get('edits', []):
         rows.append({
             'operation_id': edit['item_id'], 'kind': edit['kind'],

@@ -667,6 +667,69 @@ def test_vm_v2_review_receipts_source_bound_start_cue_word_evidence(vm_case, mon
         'synthetic-fixture', 'synthetic-fixture', 'synthetic-fixture')
 
 
+def test_vm_v2_review_binds_speech_cue_to_visual_anchor(vm_case, monkeypatch):
+    input_path, context_path, input_data, context = vm_case
+    digest = configure_v2_review(
+        input_path, context_path, input_data, context,
+        '0:00.20（语音是“接下来”，画面从这里落黑板开始）-0:00.90',
+    )
+
+    def transcribe(source_descriptor, output, *, config=None, env_path=None):
+        alignment = {
+            'schema_version': 1, 'source_sha256': digest,
+            'provider': 'synthetic-fixture', 'model': 'synthetic-fixture',
+            'adapter': 'synthetic-fixture',
+            'words': [
+                {'text': '前文', 'start': 0, 'end': 0.2},
+                {'text': '接下来', 'start': 0.45, 'end': 0.65},
+                {'text': '后文', 'start': 0.65, 'end': 0.9},
+            ],
+        }
+        write_json(output, alignment)
+        return alignment
+
+    monkeypatch.setattr(vm_pmo, 'transcribe_source', transcribe, raising=False)
+    planned = vm_pmo.plan_command(input_path, context_path)
+
+    assert planned['status'] == 'ready', planned.get('error')
+    cue = read_json(context['plan_path'])['operations'][0]
+    assert cue['kind'] == 'start_cue'
+    assert cue['source_start_us'] == 450_000
+    assert cue['visual_anchor_us'] == 200_000
+    assert cue['visual_sync_tolerance_us'] == 500_000
+    assert cue['visual_sync_delta_us'] == 250_000
+
+
+def test_vm_v2_review_blocks_speech_cue_outside_visual_sync_tolerance(vm_case, monkeypatch):
+    input_path, context_path, input_data, context = vm_case
+    digest = configure_v2_review(
+        input_path, context_path, input_data, context,
+        '0:00.20（语音是“接下来”，画面从这里落黑板开始）-0:00.90',
+    )
+
+    def transcribe(source_descriptor, output, *, config=None, env_path=None):
+        alignment = {
+            'schema_version': 1, 'source_sha256': digest,
+            'provider': 'synthetic-fixture', 'model': 'synthetic-fixture',
+            'adapter': 'synthetic-fixture',
+            'words': [
+                {'text': '前文', 'start': 0, 'end': 0.2},
+                {'text': '接下来', 'start': 0.8, 'end': 0.9},
+            ],
+        }
+        write_json(output, alignment)
+        return alignment
+
+    monkeypatch.setattr(vm_pmo, 'transcribe_source', transcribe, raising=False)
+    planned = vm_pmo.plan_command(input_path, context_path)
+
+    assert planned['status'] == 'blocked'
+    assert planned['error']['code'] == 'UNSUPPORTED_INSTRUCTION'
+    assert input_data['instructions'][0]['raw_text'] in planned['instruction_results'][0]['raw_text']
+    assert not Path(context['plan_path']).exists()
+    assert not Path(context['output_path']).exists()
+
+
 def test_vm_v2_review_blocks_ambiguous_start_cue_word_evidence(vm_case, monkeypatch):
     input_path, context_path, input_data, context = vm_case
     digest = configure_v2_review(input_path, context_path, input_data, context,
