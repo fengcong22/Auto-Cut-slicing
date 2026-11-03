@@ -4,6 +4,8 @@ Taskboard 通道从一个本地源视频生成多条独立 MP4，固定 **1920×
 按原比例缩放并居中补边。保留源音频内容和时序，只有明确删除/静音改变相应区间；音频编码为 AAC。
 输入、结果和媒体通过本地文件交接。
 
+VM/PMO v2 的 `input.json` 可选 `manual_revision`，由 Taskboard 可信本机返修入口冻结：`source_sha256`、原文 `note` 与按源时间排序的 `clips`。每个 clip 用整数毫秒的 `start_ms`、`end_ms`；可选 `freeze: {start_ms,end_ms,frame_ms}` 在指定片段内以同一源的静帧替换画面，音轨不断。该结构只接受 1–8 个非重叠片段，源 SHA 必须与获批采集或已确认父成片一致。原始飞书指令保留在 `instructions[0].raw_text`，规划与渲染回执继续绑定同一 input SHA；没有返修结构的既有 v2 输入保持原解析行为。
+
 | Taskboard 接口 | 本包交接方式 |
 | --- | --- |
 | 输入 | 请求 JSON：本地视频路径、每条保留范围/指令、拼接顺序。 |

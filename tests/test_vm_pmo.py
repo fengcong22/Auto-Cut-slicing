@@ -111,6 +111,74 @@ def configure_v2_initial(input_path, context_path, input_data, context, raw_text
     return digest
 
 
+def test_vm_v2_manual_revision_preserves_original_instruction_and_renders_freeze(vm_case):
+    input_path, context_path, input_data, context = vm_case
+    digest = configure_v2_initial(input_path, context_path, input_data, context,
+                                  '0:00-0:00.20+0:00.40-0:00.60')
+    input_data['manual_revision'] = {
+        'source_sha256': digest,
+        'note': 'Complete the spoken sentence, then hold its last frame.',
+        'clips': [
+            {'start_ms': 0, 'end_ms': 600,
+             'freeze': {'start_ms': 200, 'end_ms': 400, 'frame_ms': 200}},
+        ],
+    }
+    write_json(input_path, input_data)
+    settings = read_json(context_path)
+    settings['input_sha256'] = file_sha256(input_path)
+    write_json(context_path, settings)
+
+    planned = vm_pmo.plan_command(input_path, context_path)
+    assert planned['status'] == 'ready'
+    plan = read_json(context['plan_path'])
+    assert plan['instruction_results'][0]['raw_text'] == input_data['instructions'][0]['raw_text']
+    assert any(row['kind'] == 'freeze_frame' for row in plan['operations'])
+    rendered = vm_pmo.render_command(input_path, context_path, Path(context['plan_path']))
+    assert rendered['status'] == 'rendered'
+
+
+def test_vm_v2_manual_revision_rejects_changed_source(vm_case):
+    input_path, context_path, input_data, context = vm_case
+    configure_v2_initial(input_path, context_path, input_data, context, '0:00-0:00.60')
+    input_data['manual_revision'] = {
+        'source_sha256': '0' * 64, 'note': 'Hold the final frame.',
+        'clips': [{'start_ms': 0, 'end_ms': 600}],
+    }
+    write_json(input_path, input_data)
+    settings = read_json(context_path)
+    settings['input_sha256'] = file_sha256(input_path)
+    write_json(context_path, settings)
+    receipt = vm_pmo.plan_command(input_path, context_path)
+    assert receipt['status'] == 'blocked'
+    assert receipt['error']['code'] == 'INVALID_INPUT'
+
+
+def test_vm_v2_manual_revision_can_hold_previous_clip_frame_over_next_clip(vm_case):
+    input_path, context_path, input_data, context = vm_case
+    digest = configure_v2_review(input_path, context_path, input_data, context,
+                                 'Keep the spoken summary and reveal the falling board.')
+    input_data['manual_revision'] = {
+        'source_sha256': digest, 'note': 'Replace the old board with the preceding tail frame.',
+        'clips': [
+            {'start_ms': 0, 'end_ms': 300},
+            {'start_ms': 300, 'end_ms': 600,
+             'freeze': {'start_ms': 300, 'end_ms': 400, 'frame_ms': 280}},
+        ],
+    }
+    write_json(input_path, input_data)
+    settings = read_json(context_path)
+    settings['input_sha256'] = file_sha256(input_path)
+    write_json(context_path, settings)
+
+    receipt = vm_pmo.plan_command(input_path, context_path)
+    assert receipt['status'] == 'ready', receipt['error']
+    plan = read_json(context['plan_path'])
+    assert len(plan['segments']) == 2
+    assert any(row['kind'] == 'freeze_frame' for row in plan['operations'])
+    rendered = vm_pmo.render_command(input_path, context_path, Path(context['plan_path']))
+    assert rendered['status'] == 'rendered'
+
+
 def test_vm_plan_and_render_bind_single_mp4_to_request(vm_case):
     input_path, context_path, input_data, context = vm_case
     planned = invoke('plan', '--input', input_path, '--context', context_path)

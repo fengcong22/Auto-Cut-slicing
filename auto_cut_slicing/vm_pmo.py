@@ -117,12 +117,18 @@ def _error(error):
 
 
 def _validate_input(input_data):
-    _object(input_data, ('protocol', 'schema_version', 'package', 'binding', 'record',
-                         'review_round', 'source', 'instructions', 'output_profile',
-                         'delivery_target'), 'input')
+    required = {'protocol', 'schema_version', 'package', 'binding', 'record',
+                'review_round', 'source', 'instructions', 'output_profile',
+                'delivery_target'}
+    if not isinstance(input_data, dict) or not required <= set(input_data) or (
+        set(input_data) - required - {'manual_revision'}
+    ):
+        raise VmError('INVALID_INPUT', 'Input contains missing or unsupported fields')
     version = input_data['schema_version']
     if input_data['protocol'] != PROTOCOL or type(version) is not int or version not in (1, 2):
         raise VmError('INVALID_INPUT', 'Unsupported VM/PMO protocol or schema version')
+    if 'manual_revision' in input_data and version != 2:
+        raise VmError('INVALID_INPUT', 'Manual revisions require schema v2')
     package = _object(input_data['package'], ('alias', 'name', 'version', 'manifest_sha256'), 'package')
     _id(package['alias'], 'package.alias')
     manifest = Path(__file__).resolve().parents[1] / 'PACKAGE-MANIFEST.json'
@@ -215,6 +221,47 @@ def _validate_input(input_data):
             or any(not isinstance(phrase, str) or not phrase.strip() or '\0' in phrase
                    for phrase in item['must_keep'])):
             raise VmError('INVALID_INPUT', 'must_keep must be a list of nonempty phrases')
+    if 'manual_revision' in input_data:
+        _manual_revision_clips(input_data)
+
+
+def _manual_revision_clips(input_data):
+    revision = _object(input_data['manual_revision'],
+                       ('source_sha256', 'note', 'clips'), 'manual revision')
+    if _hash(revision['source_sha256'], 'manual revision source') != input_data['source']['sha256']:
+        raise VmError('INVALID_INPUT', 'Manual revision source differs from the approved source')
+    note = revision['note']
+    if not isinstance(note, str) or not note.strip() or len(note) > 1024 or '\0' in note:
+        raise VmError('INVALID_INPUT', 'Manual revision note is invalid')
+    rows = revision['clips']
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 8:
+        raise VmError('INVALID_INPUT', 'Manual revision requires 1-8 clips')
+    duration_ms = input_data['source']['duration_ms']
+    clips = []
+    previous_end = 0
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict) or set(row) not in (
+            {'start_ms', 'end_ms'}, {'start_ms', 'end_ms', 'freeze'}
+        ):
+            raise VmError('INVALID_INPUT', 'Manual revision clip has unsupported fields')
+        start, end = row['start_ms'], row['end_ms']
+        if any(type(value) is not int for value in (start, end)) or not previous_end <= start < end <= duration_ms:
+            raise VmError('INVALID_INPUT', 'Manual revision clip is outside the approved source')
+        clip = {'id': f'manual-{index}', 'source': input_data['source']['source_id'],
+                'start': start / 1000, 'end': end / 1000, 'boundary_policy': 'exact'}
+        if 'freeze' in row:
+            freeze = _object(row['freeze'], ('start_ms', 'end_ms', 'frame_ms'), 'manual freeze')
+            first, last, frame = freeze['start_ms'], freeze['end_ms'], freeze['frame_ms']
+            if any(type(value) is not int for value in (first, last, frame)) or (
+                not start <= first < last <= end or not 0 <= frame < duration_ms
+            ):
+                raise VmError('INVALID_INPUT', 'Manual freeze is outside the approved source or clip')
+            clip['edits'] = [{'id': f'freeze-{index}', 'kind': 'freeze_frame',
+                              'start': first / 1000, 'end': last / 1000,
+                              'frame_time': frame / 1000, 'source_text': note}]
+        clips.append(clip)
+        previous_end = end
+    return clips
 
 
 def _validate_context(context, input_path, context_path):
@@ -518,7 +565,8 @@ def _build_plan(input_data, context, paths):
         instruction_segments = [segment['segment_id'] for segment in segments]
         alignment_sha256 = None
     else:
-        clips = _parse_review_clips(input_data, descriptor)
+        clips = (_manual_revision_clips(input_data) if 'manual_revision' in input_data
+                 else _parse_review_clips(input_data, descriptor))
         alignment = (_alignment_path(input_data, paths['source_path'], descriptor, paths['run_dir'])
                      if _requires_alignment(clips) else None)
         engine = _review_engine_plan(input_data, paths['source_path'], descriptor, clips,
