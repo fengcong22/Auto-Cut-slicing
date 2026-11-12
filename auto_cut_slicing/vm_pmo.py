@@ -226,6 +226,8 @@ def _validate_input(input_data):
 
 
 def _manual_revision_clips(input_data):
+    if len(input_data['instructions']) != 1:
+        raise VmError('UNSUPPORTED_INSTRUCTION', 'A run must contain exactly one instruction snapshot')
     revision = _object(input_data['manual_revision'],
                        ('source_sha256', 'note', 'clips'), 'manual revision')
     if _hash(revision['source_sha256'], 'manual revision source') != input_data['source']['sha256']:

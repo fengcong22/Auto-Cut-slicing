@@ -153,6 +153,36 @@ def test_vm_v2_manual_revision_rejects_changed_source(vm_case):
     assert receipt['error']['code'] == 'INVALID_INPUT'
 
 
+@pytest.mark.parametrize('stage', ['initial', 'review'])
+def test_vm_v2_manual_revision_blocks_multiple_instructions_without_dropping_feedback(vm_case, stage):
+    input_path, context_path, input_data, context = vm_case
+    configure = configure_v2_initial if stage == 'initial' else configure_v2_review
+    digest = configure(input_path, context_path, input_data, context, '0:00-0:00.60')
+    input_data['manual_revision'] = {
+        'source_sha256': digest, 'note': 'Keep the selected range.',
+        'clips': [{'start_ms': 0, 'end_ms': 600}],
+    }
+    input_data['instructions'].append({
+        **input_data['instructions'][0], 'instruction_id': 'instruction-2',
+        'raw_text': 'Do not silently omit this additional instruction.',
+    })
+    write_json(input_path, input_data)
+    settings = read_json(context_path)
+    settings['input_sha256'] = file_sha256(input_path)
+    write_json(context_path, settings)
+
+    receipt = vm_pmo.plan_command(input_path, context_path)
+
+    assert receipt['status'] == 'blocked'
+    assert receipt['error']['code'] == 'UNSUPPORTED_INSTRUCTION'
+    assert [row['raw_text'] for row in receipt['instruction_results']] == [
+        '0:00-0:00.60', 'Do not silently omit this additional instruction.',
+    ]
+    assert all(row['status'] == 'blocked' for row in receipt['instruction_results'])
+    assert not Path(context['plan_path']).exists()
+    assert not Path(context['output_path']).exists()
+
+
 def test_vm_v2_manual_revision_can_hold_previous_clip_frame_over_next_clip(vm_case):
     input_path, context_path, input_data, context = vm_case
     digest = configure_v2_review(input_path, context_path, input_data, context,
