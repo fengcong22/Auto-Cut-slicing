@@ -49,7 +49,7 @@ MP4 开始的审核轮次，并接入源哈希绑定的删词/语音 cue 规划�
 协议见 [VM / PMO v1](docs/vm-pmo-offline-contract-v1.md) 和
 [VM / PMO v2](docs/vm-pmo-offline-contract-v2.md)。Taskboard v2 已接入初稿审批下载、审核 parent/轮次、
 MP4 校验、附件追加读回和阶段写回；离线合成素材验证覆盖多轮审核和语义证据阻断。真实测试表的审批、
-附件更新及最终归档仍须单独验收。Taskboard 项目见
+附件更新及最终归档仍须单独验收，步骤见 [真实验收清单](docs/real-acceptance-checklist.md)。Taskboard 项目见
 [feishu-codex-Taskboard](https://github.com/fengcong22/feishu-codex-Taskboard)。
 
 ```powershell
