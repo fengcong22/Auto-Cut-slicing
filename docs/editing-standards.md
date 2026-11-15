@@ -100,5 +100,6 @@
 收到已确认的反馈时，先归纳为“触发条件 → 编辑选择 → 验证方法”，更新本文件；
 需要所有任务必读的约束同步到 `AGENTS.md`，执行步骤同步到
 `skills/auto-cut-slicing/SKILL.md`，验收项同步到 `docs/validation.md`。
+影响 AI 规划方式或意图结构的规则，同步到 `docs/ai-editing-workflow.md`、`docs/intent-schema.md` 和 `schemas/`。
 修改技能后运行 `python scripts/install_repo_skills.py` 更新本仓库安装副本。
 规则变更提交到 Git；具体媒体结果和用户反馈按版本留在本地回执，保留证据的适用范围。

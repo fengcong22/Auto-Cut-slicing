@@ -7,6 +7,12 @@ Develop on `codex/*`, `feature/*` or `fix/*` branches. It is not an Auto-Cut Lit
   and use the delivery checklist in [validation](docs/validation.md). These apply to future tasks;
   current explicit user requirements take precedence. Preserve confirmed feedback as reusable rules,
   with sample-specific timings kept as examples rather than universal defaults.
+- When AI interprets editing feedback, follow [AI editing workflow](docs/ai-editing-workflow.md)
+  and [edit intent](docs/intent-schema.md). Cover every part of the raw feedback; every time must
+  cite a verifiable source (user-written time, ASR word edge, decoded frame, source edge, audio
+  measurement). Choose among repeated phrases only by uniqueness, user time, user ordinal or user
+  context; otherwise block and list candidates. Report unsupported or unevidenced requests; never
+  describe unimplemented commands (intent/evidence/qa, VM/PMO v3) as executed.
 - This workflow makes real ripple edits: deleting words or paragraphs reduces output duration.
   Keep complete source files; expose each retained range as an editable video/audio segment.
 - Independent slices and ordered multi-source concatenation share one maintained planner.

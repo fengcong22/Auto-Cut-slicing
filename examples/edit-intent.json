@@ -1,0 +1,226 @@
+{
+  "schema": "auto-cut-slicing/edit-intent",
+  "schema_version": 1,
+  "status": "proposed",
+  "author": {
+    "kind": "ai",
+    "agent": "codex",
+    "model": null,
+    "session_id": null
+  },
+  "bindings": {
+    "timeline_basis": "vm_original",
+    "sources": [
+      {
+        "source_id": "lesson",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "duration_us": 182000000,
+        "alignment_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ],
+    "evidence_manifest_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "instructions": [
+    {
+      "instruction_id": "i1",
+      "raw_text": "0:04（空气）-1:20，删掉第二遍的“我们再看一下”，保留“氧气”，其他不变",
+      "raw_text_sha256": "261d97fb1c41ce406d42b59a08708ebfa25891bad7e821901ed895b339eab5b0"
+    }
+  ],
+  "coverage": [
+    {
+      "span": {
+        "instruction_id": "i1",
+        "start": 0,
+        "end": 13
+      },
+      "quote": "0:04（空气）-1:20",
+      "disposition": "operation",
+      "intent_ids": [
+        "clip-1"
+      ],
+      "reason": "保留 0:04 到 1:20，起点落在完整词“空气”上。"
+    },
+    {
+      "span": {
+        "instruction_id": "i1",
+        "start": 14,
+        "end": 28
+      },
+      "quote": "删掉第二遍的“我们再看一下”",
+      "disposition": "operation",
+      "intent_ids": [
+        "del-1"
+      ],
+      "reason": "未说只删声音，按音画同时删除；“第二遍”指片段内第 2 次出现。"
+    },
+    {
+      "span": {
+        "instruction_id": "i1",
+        "start": 29,
+        "end": 35
+      },
+      "quote": "保留“氧气”",
+      "disposition": "operation",
+      "intent_ids": [
+        "clip-1"
+      ],
+      "reason": "作为 must_keep 保护短语。"
+    },
+    {
+      "span": {
+        "instruction_id": "i1",
+        "start": 36,
+        "end": 40
+      },
+      "quote": "其他不变",
+      "disposition": "constraint",
+      "intent_ids": [],
+      "reason": "除上述操作外不做其他改动，由 QA unlisted_change 检查。"
+    }
+  ],
+  "outputs": [
+    {
+      "output_id": "review",
+      "clips": [
+        {
+          "intent_id": "clip-1",
+          "source_id": "lesson",
+          "covers": [
+            {
+              "instruction_id": "i1",
+              "start": 0,
+              "end": 13
+            },
+            {
+              "instruction_id": "i1",
+              "start": 29,
+              "end": 35
+            }
+          ],
+          "start": {
+            "mode": "cue",
+            "phrase": {
+              "source_id": "lesson",
+              "alignment_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "first_index": 12,
+              "last_index": 12,
+              "text": "空气",
+              "selection": {
+                "method": "user_anchor",
+                "scope_start_us": 0,
+                "scope_end_us": 80000000,
+                "candidates": [
+                  {
+                    "first_index": 12,
+                    "last_index": 12,
+                    "start_us": 4400000,
+                    "end_us": 4820000
+                  },
+                  {
+                    "first_index": 131,
+                    "last_index": 131,
+                    "start_us": 52100000,
+                    "end_us": 52480000
+                  }
+                ],
+                "evidence_id": "phrase-kongqi",
+                "anchor": {
+                  "ref": "user_anchor",
+                  "value_us": 4000000,
+                  "span": {
+                    "instruction_id": "i1",
+                    "start": 0,
+                    "end": 4
+                  }
+                },
+                "radius_us": 3000000
+              }
+            }
+          },
+          "end": {
+            "mode": "sentence",
+            "at": {
+              "ref": "user_anchor",
+              "value_us": 80000000,
+              "span": {
+                "instruction_id": "i1",
+                "start": 9,
+                "end": 13
+              }
+            }
+          },
+          "operations": [
+            {
+              "intent_id": "del-1",
+              "kind": "delete_phrase",
+              "covers": [
+                {
+                  "instruction_id": "i1",
+                  "start": 14,
+                  "end": 28
+                }
+              ],
+              "phrase": {
+                "source_id": "lesson",
+                "alignment_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+                "first_index": 98,
+                "last_index": 100,
+                "text": "我们再看一下",
+                "selection": {
+                  "method": "user_ordinal",
+                  "scope_start_us": 4400000,
+                  "scope_end_us": 80000000,
+                  "candidates": [
+                    {
+                      "first_index": 40,
+                      "last_index": 42,
+                      "start_us": 21200000,
+                      "end_us": 22050000
+                    },
+                    {
+                      "first_index": 98,
+                      "last_index": 100,
+                      "start_us": 47500000,
+                      "end_us": 48310000
+                    },
+                    {
+                      "first_index": 150,
+                      "last_index": 152,
+                      "start_us": 70300000,
+                      "end_us": 71160000
+                    }
+                  ],
+                  "evidence_id": "phrase-zaikan",
+                  "ordinal": 2,
+                  "ordinal_span": {
+                    "instruction_id": "i1",
+                    "start": 16,
+                    "end": 19
+                  }
+                }
+              },
+              "rationale": "片段内共 3 处，按出现顺序第 2 处。"
+            }
+          ],
+          "must_keep": [
+            {
+              "text": "氧气",
+              "origin": {
+                "kind": "instruction_span",
+                "span": {
+                  "instruction_id": "i1",
+                  "start": 32,
+                  "end": 34
+                }
+              }
+            }
+          ],
+          "rationale": "用户标注 0:04；ASR 句首在更早位置，但按准则从就近完整词“空气”切入，不带入引入语。"
+        }
+      ]
+    }
+  ],
+  "blockers": [],
+  "notes": "示例中的哈希、词序号和时间均为说明用占位值，不对应任何真实素材。"
+}

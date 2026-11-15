@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "auto-cut-slicing/schemas/evidence-manifest.v1.schema.json",
+  "title": "Auto-Cut Slicing evidence manifest v1",
+  "description": "本轮剪辑可引用的证据清单。edit-intent 中的 evidence_id 必须在此登记；每个文件以 SHA-256 绑定源。规则见 docs/intent-schema.md。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "sources", "entries"],
+  "properties": {
+    "schema": {"const": "auto-cut-slicing/evidence-manifest"},
+    "schema_version": {"const": 1},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "sha256", "duration_us", "alignment_sha256"],
+        "properties": {
+          "source_id": {"$ref": "#/$defs/id"},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "duration_us": {"type": "integer", "minimum": 1},
+          "alignment_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+        }
+      }
+    },
+    "entries": {"type": "array", "items": {"$ref": "#/$defs/entry"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "kind", "path", "sha256", "source_id", "source_sha256", "alignment_sha256", "tool", "tool_version", "params", "limitations"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "kind": {
+          "enum": [
+            "alignment", "transcript_window", "phrase_search", "frames", "contact_sheet",
+            "audio_gap", "freeze_scan", "output_alignment", "seam_preview"
+          ]
+        },
+        "path": {"type": "string", "minLength": 1, "description": "相对清单所在目录的路径，不含 .. 和盘符。"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "source_id": {"$ref": "#/$defs/id"},
+        "source_sha256": {"$ref": "#/$defs/sha256", "description": "被分析的媒体字节哈希；output_alignment 和 seam_preview 为成片哈希。"},
+        "alignment_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "tool": {"type": "string", "minLength": 1},
+        "tool_version": {"type": "string", "minLength": 1},
+        "params": {"type": "object"},
+        "frame_times_us": {
+          "description": "frames / contact_sheet 中每张图对应的真实解码帧源时间戳。",
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0}
+        },
+        "limitations": {"type": "array", "items": {"type": "string"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"enum": ["frames", "contact_sheet"]}}},
+          "then": {"required": ["frame_times_us"], "properties": {"frame_times_us": {"minItems": 1}}}
+        }
+      ]
+    }
+  }
+}
