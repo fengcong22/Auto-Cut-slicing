@@ -450,3 +450,45 @@ def test_qa_flags_a_cut_inside_the_measured_decay(case):
     run_qa(case["context"], path, plan, "out", video, None, case["dir"] / "qa-decay.json")
     seam = [row for row in read_json(case["dir"] / "qa-decay.json")["checks"] if row["kind"] == "seam_gap"]
     assert len(seam) == 1 and seam[0]["status"] == "needs_human" and "decay" in seam[0]["detail"]
+
+
+def test_qa_requires_the_previous_picture_during_a_seam_pause(tmp_path):
+    from auto_cut_slicing.planner import compile_job
+    from auto_cut_slicing.qa import _pause_picture_checks
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg required")
+    source = tmp_path / "rb.mp4"
+    tone = "0.5*sin(2*PI*500*t)*(between(t,0.5,1.0)+between(t,4.0,4.5))"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=160x90:r=25:d=3",
+        "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=25:d=3",
+        "-f", "lavfi", "-i", f"aevalsrc='{tone}':s=48000:d=6",
+        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-map", "2:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        check=True, capture_output=True)
+    sha = file_sha256(source)
+    write_json(tmp_path / "rb.words.json", _asr(sha, [("一。", [("一", 0.5, 1.0)]), ("二。", [("二", 4.0, 4.5)])]))
+    context = EditContext(write_json(tmp_path / "context.json", {
+        "schema": "auto-cut-slicing/intent-context", "schema_version": 1, "timeline_basis": "local_source",
+        "sources": [{"source_id": "rb", "path": "rb.mp4", "asr": "rb.words.json"}],
+        "instructions": [{"instruction_id": "i1", "raw_text": "x"}], "evidence_dir": "evidence"}))
+
+    def checked(name, edits):
+        clips = [{"id": "a", "source": "rb", "start": 0, "end": 1.4},
+                 {"id": "b", "source": "rb", "start": 3.2, "end": 5, "edits": edits}]
+        job = write_json(tmp_path / f"{name}.json", {"schema_version": 1, "name": name,
+                         "sources": [{"id": "rb", "path": str(source)}],
+                         "outputs": [{"id": "out", "name": name, "clips": clips}]})
+        plan = compile_job(job)
+        video = tmp_path / f"{name}.mp4"
+        render_output(plan, "out", video)
+        rows = []
+        _pause_picture_checks(rows, context, plan["outputs"][0], video, 40_000, 3_200_000)
+        return rows
+
+    shows_next = checked("next", [])
+    assert [row["status"] for row in shows_next] == ["failed"]
+    holds_previous = checked("hold", [{"id": "hold", "kind": "freeze_frame", "start": 3.2, "end": 4.0,
+                                       "frame_time": 1.36, "source_text": "停顿还要再长"}])
+    assert [row["status"] for row in holds_previous] == ["passed"]

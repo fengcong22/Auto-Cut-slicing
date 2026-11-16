@@ -71,6 +71,7 @@ ASR 句末标点是句边界候选证据；仅结构验收不能声称已试听�
 真实解码帧、源首尾或音频测量，不写没有来源的数字。短语出现多次时，只按唯一、用户时间、
 用户序数或用户上下文选择，否则阻断并列出候选。不确定、缺证据或不支持时明确报告，不用近似操作代替。
 已实现 `evidence transcript|find-phrase|frames|audio-gap`、`intent validate|compile` 和 `qa`，都读取一份 intent-context；
-出点用 audio-gap 实测窗口内的 `gap_choice`，不要停在最后一个词的 ASR 终点。
+出点用 audio-gap 实测窗口内的 `gap_choice`，不要停在最后一个词的 ASR 终点；每个切口约 1 秒无语音（只用自然停顿）。
+接缝停顿期间保持前一段最后一帧（`semantic_pause` 定格），到后段声音开始才切后段画面，QA 的 `seam_pause_picture` 会检查。
 QA 画面复核文件和 VM/PMO v3 尚未实现，见工作流“能力状态”表，不得写成已执行。
 `qa` 的 `ready_for_review` 不是验收；质量检查分开记录自动检查、AI 复核和人工试听。

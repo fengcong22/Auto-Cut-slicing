@@ -92,8 +92,13 @@
   尾段不够时报告 `INTENT_UNSUPPORTED_OPERATION` 或 `INTENT_NEEDS_USER_DECISION`，不伪造空白。
 - 出点不要停在最后一个词的 ASR 终点：先对该词之后的停顿运行 `evidence audio-gap`，出点用 `gap_choice` 落在
   `out_window` 内。实测样片中 ASR 终点之后普遍还有 0.06–0.32s 衰减，停在 ASR 终点会截掉尾音。
-  **暂定默认（待用户确认）**：取 `min(out_window 上界, decay_end + 0.3s)`，即保留完整衰减再留约 0.3 秒气口。
-  用户写了时长时用 `user_duration`，由时长算出，不再另选。入点同理使用 `in_window`。
+  **默认停顿（用户 2026-11-16 试听确认）**：每个切口在上一词衰减结束与下一段起音之间留约 1 秒无语音。
+  出点取 `min(out_window 上界, decay_end + 1s)`；接缝不足 1 秒的部分，由后段入点用 `in_window` 前移补足；
+  开头前导同样最多约 1 秒。源中停顿不够时取最大值并在 rationale 写明。用户写了时长时用 `user_duration`。
+- **停顿期间的画面用前一段的最后一帧**：后段入点前移后，在后段 `[入点, 后段起音)` 上加
+  `freeze_cover`（`purpose: semantic_pause`），`frame` 取前一段出点前最后一个解码帧（先用 `evidence frames` 取证）。
+  后段起音用 audio-gap 的 `low_energy_end`，它包括转场音效；若那时后段画面仍有残留，`end` 延到第一张干净帧。
+  不要用后段的帧填这段停顿。开头没有前一段，残留才用后面的干净新画面。
 
 ### 4. 写出意图计划
 
@@ -127,6 +132,7 @@
 | `sentence_complete`：终点句子完整 | 句界证据 | `passed` / `failed` / `needs_human` |
 | `seam_gap`：切点不截衰减、不切进下一词起音 | 对每个切点实测上一词衰减与下一词起音（同 audio-gap） | `passed` / `needs_human` |
 | `opening_frame` / `seam_frames` / `freeze_frames`：画面无残留、无闪回 | 查看导出的帧（定格另导出最后一帧和恢复播放第一帧） | `ai_reviewed` / `needs_human` / `failed` |
+| `seam_pause_picture`：接缝停顿期间仍是前一段画面 | 在后段起音（含转场音效）之前抽帧，与前一段末帧比较 | `passed` / `failed` / `not_run` |
 | `mute_silence`：静音区间确实无声 | 测量成片该区间的音频电平，阈值 −60 dBFS，不需要 ASR | `passed` / `failed` / `not_run` |
 | `unlisted_change`：没有意见之外的改动 | 计划操作与覆盖表对照 | `passed` / `failed` |
 | `listening` / `pacing`：听感与节奏 | 只能由人完成 | `needs_human` / `not_run` / `failed` |

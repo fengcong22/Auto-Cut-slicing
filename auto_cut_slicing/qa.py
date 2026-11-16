@@ -20,6 +20,7 @@ from .schema import require_schema
 
 _PHRASE_WINDOW_US = 2_000_000
 _SILENCE_DBFS = -60.0
+_PICTURE_CHANGE = 8.0  # mean gray difference (0-255) on a 48x27 proxy
 
 
 def _check(rows, check_id, kind, status, method, detail, *, intent_id=None, start=None, end=None):
@@ -37,6 +38,68 @@ def _export_frame(video: Path, target_us: int, lead_us: int, image: Path) -> Non
          "-frames:v", "1", "-vf", "scale=960:-2", str(image)],
         check=True, capture_output=True,
     )
+
+
+def _gray(video: Path, at_us: int) -> bytes:
+    from .media import find_tool
+
+    return subprocess.run(
+        [find_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin",
+         "-ss", f"{at_us / 1_000_000:.6f}", "-i", str(video), "-frames:v", "1",
+         "-vf", "scale=48:27,format=gray", "-f", "rawvideo", "-"],
+        check=True, capture_output=True,
+    ).stdout
+
+
+def _difference(a: bytes, b: bytes) -> float:
+    if not a or len(a) != len(b):
+        return float("inf")
+    return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+
+
+def _pause_picture_checks(rows, context, output, video, frame_us, duration_us):
+    """At every seam, the speech-free lead-in of the next clip must keep the previous picture."""
+    segments = output["segments"]
+    for previous, segment in zip(segments, segments[1:]):
+        if previous["clip_id"] == segment["clip_id"]:
+            continue  # a deletion join inside one clip, not a semantic seam
+        join = segment["target_start_us"]
+        alignment = context.source(segment["source_id"])["alignment"]
+        if alignment is None:
+            _check(rows, f"pause-picture-{join}", "seam_pause_picture", "not_run", "automatic",
+                   "The incoming clip has no word alignment.", start=join, end=join)
+            continue
+        words = alignment["words"]
+        index = next((i for i, w in enumerate(words) if w["start_us"] >= segment["source_start_us"]), None)
+        if index is None:
+            continue
+        first = words[index]["start_us"]
+        if index > 0:
+            # Sound before the first word (a transition effect, a breath) starts the next clip too.
+            from .audio import analyze_gap
+
+            source = context.source(segment["source_id"])
+            measured = analyze_gap(source["path"], words, index - 1, source["duration_us"])["low_energy_end"]
+            if measured is not None and measured >= segment["source_start_us"]:
+                first = min(first, measured)
+        onset = min(segment["target_start_us"] + first - segment["source_start_us"],
+                    segment["target_start_us"] + segment["duration_us"], duration_us)
+        if onset - join < 2 * frame_us:
+            _check(rows, f"pause-picture-{join}", "seam_pause_picture", "passed", "automatic",
+                   "The next clip starts speaking at the seam; there is no lead-in pause to cover.",
+                   intent_id=segment["clip_id"], start=join, end=onset)
+            continue
+        held = _gray(video, join - frame_us)
+        samples = sorted({join, (join + onset) // 2, onset - frame_us})
+        worst = max(_difference(held, _gray(video, t)) for t in samples)
+        ok = worst <= _PICTURE_CHANGE
+        _check(rows, f"pause-picture-{join}", "seam_pause_picture", "passed" if ok else "failed", "automatic",
+               (f"The pause before the next clip's sound ({(onset - join) / 1e6:.2f}s) keeps the previous "
+                f"clip's last picture (max change {worst:.1f})." if ok else
+                f"The pause before the next clip's sound ({(onset - join) / 1e6:.2f}s) shows a different "
+                f"picture (max change {worst:.1f}); hold the previous clip's last frame until the next clip "
+                "speaks, as the editing standards require."),
+               intent_id=segment["clip_id"], start=join, end=onset)
 
 
 def _rms_dbfs(video: Path, start_us: int, duration_us: int) -> float | None:
@@ -257,6 +320,7 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
             _export_frame(Path(descriptor["path"]), t, lead, image)
             names.append(image.name)
         exported.append((join, names))
+    _pause_picture_checks(rows, context, output, Path(descriptor["path"]), frame_us, descriptor["duration_us"])
     for join, names in exported:
         kind = "opening_frame" if join == 0 else "seam_frames"
         _check(rows, f"frames-{join}", kind, "needs_human", "automatic",
