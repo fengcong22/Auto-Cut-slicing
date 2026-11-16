@@ -534,3 +534,52 @@ def test_qa_warns_when_a_freeze_skips_a_finished_transition(tmp_path):
 
     assert "may be skipped" in freeze_detail("skips", 3.8)
     assert "continues after playback resumes" in freeze_detail("plays", 3.2)
+
+
+def test_qa_rejects_a_seam_freeze_that_skips_the_transition(tmp_path):
+    from auto_cut_slicing.planner import compile_job
+    from auto_cut_slicing.qa import _pause_picture_checks
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg required")
+    # Red picture, a white bar sweeps across 3.0-3.6 s (a transition), then static blue. Speech at 4.0 s.
+    source = tmp_path / "seam.mp4"
+    tone = "0.5*sin(2*PI*500*t)*(between(t,0.5,1.0)+between(t,4.0,4.5))"
+    video = ("color=c=red:s=160x90:r=25:d=6[bg];color=c=blue:s=160x90:r=25:d=6[b];"
+             "[bg][b]overlay=enable='gte(t,3.6)'[c];color=c=white:s=40x90:r=25:d=6[w];"
+             "[c][w]overlay=x='(t-3.0)*300-40':enable='between(t,3.0,3.6)'")
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", video, "-f", "lavfi", "-i",
+                    f"aevalsrc='{tone}':s=48000:d=6", "-t", "6", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)], check=True, capture_output=True)
+    sha = file_sha256(source)
+    write_json(tmp_path / "seam.words.json", _asr(sha, [("一。", [("一", 0.5, 1.0)]), ("二。", [("二", 4.0, 4.5)])]))
+    context = EditContext(write_json(tmp_path / "context.json", {
+        "schema": "auto-cut-slicing/intent-context", "schema_version": 1, "timeline_basis": "local_source",
+        "sources": [{"source_id": "seam", "path": "seam.mp4", "asr": "seam.words.json"}],
+        "instructions": [{"instruction_id": "i1", "raw_text": "x"}], "evidence_dir": "evidence"}))
+
+    def checked(name, entry, freeze_end):
+        edits = ([{"id": "hold", "kind": "freeze_frame", "start": entry, "end": freeze_end,
+                   "frame_time": 1.36, "source_text": "停顿还要再长"}] if freeze_end > entry else [])
+        job = write_json(tmp_path / f"{name}.json", {"schema_version": 1, "name": name,
+                         "sources": [{"id": "seam", "path": str(source)}],
+                         "outputs": [{"id": "out", "name": name, "clips": [
+                             {"id": "a", "source": "seam", "start": 0, "end": 1.4},
+                             {"id": "b", "source": "seam", "start": entry, "end": 5, "edits": edits}]}]})
+        plan = compile_job(job)
+        out = tmp_path / f"{name}.mp4"
+        render_output(plan, "out", out)
+        rows = []
+        _pause_picture_checks(rows, context, plan["outputs"][0], out, 40_000, 3_600_000)
+        return rows
+
+    skipped = checked("skipped", 2.8, 3.8)  # freeze outlasts the transition, then a hard cut
+    # Pixels cannot tell a finished transition from one that still shows the previous topic, so a freeze
+    # that covers moving frames is flagged for a person rather than failed outright.
+    assert [row["status"] for row in skipped] == ["needs_human"]
+    assert "after the next picture starts moving" in skipped[0]["detail"]
+    at_first_moving_frame = checked("entry", 2.8, 3.04)
+    assert [row["status"] for row in at_first_moving_frame] == ["passed"]
+    shows_next = checked("next", 3.04, 3.04)  # no freeze: the transition fills the pause
+    assert [row["status"] for row in shows_next] == ["failed"]
+    assert "different picture" in shows_next[0]["detail"]

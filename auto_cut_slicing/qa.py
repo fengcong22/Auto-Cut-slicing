@@ -21,6 +21,8 @@ from .schema import require_schema
 _PHRASE_WINDOW_US = 2_000_000
 _SILENCE_DBFS = -60.0
 _PICTURE_CHANGE = 8.0  # mean gray difference (0-255) on a 48x27 proxy
+_MOTION_PEAK = 40  # a single pixel this far from the held frame is real motion, not compression noise
+_MOTION_PIXELS = 4  # that many pixels must move together, so one noisy pixel does not count
 
 
 def _check(rows, check_id, kind, status, method, detail, *, intent_id=None, start=None, end=None):
@@ -80,14 +82,42 @@ def _difference(a: bytes, b: bytes) -> float:
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
-def _pause_picture_checks(rows, context, output, video, frame_us, duration_us):
-    """At every seam, the speech-free lead-in of the next clip must keep the previous picture."""
+def _moves(base: bytes, frame: bytes) -> bool:
+    """Whether a frame has left the held picture, including a transition that covers little of it.
+
+    A mean difference misses a splash or wipe that has only started: a few bright pixels average out
+    over the 48x27 proxy. A peak change catches those, and requiring several pixels to move together
+    keeps a single compression-noise pixel from counting as motion.
+    """
+    if not base or len(base) != len(frame):
+        return True
+    diffs = [abs(x - y) for x, y in zip(base, frame)]
+    return max(diffs) > _MOTION_PEAK and sum(value > 30 for value in diffs) >= _MOTION_PIXELS
+
+
+def _motion_start(source_path: Path, start_us: int, horizon_us: int) -> int | None:
+    """First source frame (within the horizon) that has left the picture at start_us."""
+    frames = _gray_run(source_path, start_us, horizon_us - start_us)
+    for index, frame in enumerate(frames[1:], start=1):
+        if _moves(frames[0], frame):
+            return start_us + index * 40_000
+    return None
+
+
+def _pause_picture_checks(rows, context, output, video, frame_us, duration_us, frame_dir=None):
+    """At every seam, the pause keeps the previous picture until the next picture starts moving.
+
+    The next clip may cut in earlier than its sound: at the first frame of its transition, or at the
+    first frame where old content is fully covered. A freeze that runs past that frame and skips the
+    rest of the transition fails here, not only in freeze_frames.
+    """
     segments = output["segments"]
     for previous, segment in zip(segments, segments[1:]):
         if previous["clip_id"] == segment["clip_id"]:
             continue  # a deletion join inside one clip, not a semantic seam
         join = segment["target_start_us"]
-        alignment = context.source(segment["source_id"])["alignment"]
+        source = context.source(segment["source_id"])
+        alignment = source["alignment"]
         if alignment is None:
             _check(rows, f"pause-picture-{join}", "seam_pause_picture", "not_run", "automatic",
                    "The incoming clip has no word alignment.", start=join, end=join)
@@ -101,7 +131,6 @@ def _pause_picture_checks(rows, context, output, video, frame_us, duration_us):
             # Sound before the first word (a transition effect, a breath) starts the next clip too.
             from .audio import analyze_gap
 
-            source = context.source(segment["source_id"])
             measured = analyze_gap(source["path"], words, index - 1, source["duration_us"])["low_energy_end"]
             if measured is not None and measured >= segment["source_start_us"]:
                 first = min(first, measured)
@@ -112,16 +141,56 @@ def _pause_picture_checks(rows, context, output, video, frame_us, duration_us):
                    "The next clip starts speaking at the seam; there is no lead-in pause to cover.",
                    intent_id=segment["clip_id"], start=join, end=onset)
             continue
+        # The pause must hold until the next picture starts moving, which can be a frame before the
+        # sound: low-energy detection lands on the onset sample, whose own frame may already move.
+        moving = _motion_start(Path(source["path"]), segment["source_start_us"], first)
+        picture_change = onset
+        if moving is not None and moving < first:
+            picture_change = min(onset, join + moving - segment["source_start_us"])
+        # A freeze over the lead-in ends where the next picture is allowed to begin.
+        freeze_end = max((effect["target_start_us"] + effect["duration_us"]
+                          for effect in output.get("effects", [])
+                          if effect["kind"] == "freeze_frame" and effect["clip_id"] == segment["clip_id"]
+                          and effect["target_start_us"] <= join), default=join)
         held = _gray(video, join - frame_us)
-        samples = sorted({join, (join + onset) // 2, onset - frame_us})
-        worst = max(_difference(held, _gray(video, t)) for t in samples)
-        ok = worst <= _PICTURE_CHANGE
-        _check(rows, f"pause-picture-{join}", "seam_pause_picture", "passed" if ok else "failed", "automatic",
-               (f"The pause before the next clip's sound ({(onset - join) / 1e6:.2f}s) keeps the previous "
-                f"clip's last picture (max change {worst:.1f})." if ok else
-                f"The pause before the next clip's sound ({(onset - join) / 1e6:.2f}s) shows a different "
-                f"picture (max change {worst:.1f}); hold the previous clip's last frame until the next clip "
-                "speaks, as the editing standards require."),
+        # The pause runs up to, but not including, the frame where the next picture is allowed to begin:
+        # that frame is the cut-in, so comparing it against the held frame would flag a correct entry.
+        until = min(freeze_end, picture_change) - frame_us
+        # Every frame of the pause, not a few samples: a short transition can fall between samples.
+        span = _gray_run(video, join, max(frame_us, until - join))
+        # Peak, not mean: a splash that covers little of the frame averages out over the proxy, the same
+        # reason _moves exists. Comparing against the frame just before the seam catches the next clip
+        # showing its own picture during the pause.
+        worst = max((_difference(held, frame) for frame in span), default=0.0)
+        problems = []
+        if any(_moves(held, frame) for frame in span):
+            problems.append(f"shows a different picture before the freeze ends (max change {worst:.1f})")
+        played = segment["source_start_us"] + max(0, freeze_end - join)
+        review = ""
+        if moving is not None and played > moving + frame_us and not problems:
+            # Playback resumes after the next picture has already started moving, so part of the
+            # transition never plays. That is right only when the hidden frames still show the previous
+            # topic (a wipe that has not covered it yet) and the cut-in is the first frame where it is
+            # covered. Pixels cannot tell that residue from a transition that has already finished, so
+            # the frames go to a person instead of a pass or a fail.
+            names = []
+            if frame_dir is not None:
+                for t in range(moving, first + frame_us, 200_000):
+                    image = frame_dir / f"t{join + t - segment['source_start_us']}us_cut-in.png"
+                    _export_frame(video, join + t - segment["source_start_us"], 0, image)
+                    names.append(image.name)
+            review = (f" Playback resumes at source {played}us, after the next picture starts moving "
+                      f"(source {moving}us). Confirm the skipped frames still show the previous topic and "
+                      f"the cut-in is the first frame where it is covered"
+                      + (f": {frame_dir.name}/{', '.join(names)}" if names else "") + ".")
+        status = "failed" if problems else ("needs_human" if review else "passed")
+        _check(rows, f"pause-picture-{join}", "seam_pause_picture", status, "automatic",
+               (f"The {(onset - join) / 1e6:.2f}s pause holds the previous picture until the next picture "
+                f"starts moving (source {segment['source_start_us'] + max(0, freeze_end - join)}us)."
+                + review if not problems else
+                f"The {(onset - join) / 1e6:.2f}s pause before the next clip's sound " + "; ".join(problems) +
+                ". Hold the previous clip's last frame until the transition's first frame, or the first frame "
+                "where old content is covered, and let the rest of the transition play."),
                intent_id=segment["clip_id"], start=join, end=onset)
 
 
@@ -343,7 +412,7 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
             _export_frame(Path(descriptor["path"]), t, lead, image)
             names.append(image.name)
         exported.append((join, names))
-    _pause_picture_checks(rows, context, output, Path(descriptor["path"]), frame_us, descriptor["duration_us"])
+    _pause_picture_checks(rows, context, output, Path(descriptor["path"]), frame_us, descriptor["duration_us"], frame_dir)
     for join, names in exported:
         kind = "opening_frame" if join == 0 else "seam_frames"
         _check(rows, f"frames-{join}", kind, "needs_human", "automatic",

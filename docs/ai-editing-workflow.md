@@ -133,12 +133,13 @@
 | `sentence_complete`：终点句子完整 | 句界证据 | `passed` / `failed` / `needs_human` |
 | `seam_gap`：切点不截衰减、不切进下一词起音 | 对每个切点实测上一词衰减与下一词起音（同 audio-gap） | `passed` / `needs_human` |
 | `opening_frame` / `seam_frames` / `freeze_frames`：画面无残留、无闪回 | 查看导出的帧（定格另导出最后一帧和恢复播放第一帧） | `ai_reviewed` / `needs_human` / `failed` |
-| `seam_pause_picture`：接缝停顿期间仍是前一段画面 | 在后段起音（含转场音效）之前抽帧，与前一段末帧比较 | `passed` / `failed` / `not_run` |
+| `seam_pause_picture`：接缝停顿期间仍是前一段画面，且后段从画面开始动的那一帧切入 | 停顿区间逐帧与前一段末帧比较（峰值，不只看均值，小面积转场也能抓住）；另测后段源里画面开始动的第一帧 | `passed` / `failed` / `needs_human` / `not_run` |
 | `mute_silence`：静音区间确实无声 | 测量成片该区间的音频电平，阈值 −60 dBFS，不需要 ASR | `passed` / `failed` / `not_run` |
 | `unlisted_change`：没有意见之外的改动 | 计划操作与覆盖表对照 | `passed` / `failed` |
 | `listening` / `pacing`：听感与节奏 | 只能由人完成 | `needs_human` / `not_run` / `failed` |
 
 - 反向 ASR 只是一种证据：识别错误可能造成假阳性或假阴性，`failed` 时先回听确认再改。
+- `seam_pause_picture` 标 `needs_human` 是因为像素分不清两种情况：定格盖住的运动帧可能还露着前一主题（转场没盖完，该继续定格），也可能转场已经播完（定格过头，该提前切入）。检查会把运动起点到起音之间的帧导出，由人确认切入点是旧内容刚被盖住的那一帧。
 - `overall` 只有 `failed` 和 `ready_for_review` 两种，没有“已验收”。
 - `qa.json` 中的 `listening` / `pacing` 不能标为 `passed`。人工试听的结论记在
   [交付清单](validation.md#实际剪辑交付清单) 的验收记录里，不回写 `qa.json`。
