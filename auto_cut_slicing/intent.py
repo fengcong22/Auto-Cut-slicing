@@ -382,7 +382,12 @@ def check_intent(intent_path, context: EditContext) -> dict[str, Any]:
             covers[clip["intent_id"]] = clip["covers"]
             for op in clip["operations"]:
                 ids.append(op["intent_id"])
-                covers[f"op:{op['intent_id']}"] = op["covers"]
+                if op["covers"]:
+                    covers[f"op:{op['intent_id']}"] = op["covers"]
+                elif op["kind"] != "freeze_cover" or op.get("standard_rule") != "clean_cut_in"                         or op["purpose"] != "clean_cut_in":
+                    checker.add("V05", "INTENT_CONFLICT",
+                                f"{op['intent_id']} has no feedback span; only a clean_cut_in freeze may "
+                                "rely on standard_rule")
     duplicates = sorted({x for x in ids if ids.count(x) > 1})
     if duplicates:
         checker.add("V13", "INTENT_CONFLICT", f"duplicate intent IDs: {duplicates}")
@@ -470,7 +475,7 @@ def check_intent(intent_path, context: EditContext) -> dict[str, Any]:
             spans = {"delete": [], "mute": [], "freeze": []}
             for p_index, op in enumerate(clip["operations"]):
                 op_path = f"{path}.operations[{p_index}]"
-                instruction_id = op["covers"][0]["instruction_id"]
+                instruction_id = (op["covers"] or clip["covers"])[0]["instruction_id"]
                 row = {"intent_id": op["intent_id"], "kind": op["kind"],
                        "source_text": checker.raw.get(instruction_id, "")}
                 if op["kind"] in ("delete_phrase", "mute_phrase"):
@@ -497,6 +502,7 @@ def check_intent(intent_path, context: EditContext) -> dict[str, Any]:
                         continue
                     row["frame_us"] = frame
                     row["visual_review"] = op["visual_review"]["status"]
+                    row["standard_rule"] = op.get("standard_rule")
                     group = "freeze"
                 if not start_us <= a < b <= end_us:
                     checker.add("V09", "INTENT_CONFLICT", "operation is empty or outside its clip", op_path)

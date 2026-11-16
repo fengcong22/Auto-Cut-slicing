@@ -19,6 +19,7 @@ from .io import file_sha256, read_json, write_new_json
 from .schema import require_schema
 
 _PHRASE_WINDOW_US = 2_000_000
+_SILENCE_DBFS = -60.0
 
 
 def _check(rows, check_id, kind, status, method, detail, *, intent_id=None, start=None, end=None):
@@ -36,6 +37,26 @@ def _export_frame(video: Path, target_us: int, lead_us: int, image: Path) -> Non
          "-frames:v", "1", "-vf", "scale=960:-2", str(image)],
         check=True, capture_output=True,
     )
+
+
+def _rms_dbfs(video: Path, start_us: int, duration_us: int) -> float | None:
+    """RMS level in dBFS; -inf for digital silence, None when no audio samples decode."""
+    import array
+    import math
+
+    from .media import find_tool
+
+    raw = subprocess.run(
+        [find_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin",
+         "-ss", f"{start_us / 1_000_000:.6f}", "-t", f"{duration_us / 1_000_000:.6f}",
+         "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
+        check=True, capture_output=True,
+    ).stdout
+    samples = array.array("h", raw[: len(raw) // 2 * 2])
+    if not samples:
+        return None
+    rms = math.sqrt(sum(value * value for value in samples) / len(samples))
+    return 20 * math.log10(rms / 32768) if rms > 0 else float("-inf")
 
 
 def _cuts(output: dict[str, Any], durations: dict[str, int]):
@@ -223,11 +244,33 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
                f"Review {frame_dir.name}/{', '.join(names)} for previous-topic residue or flashes.",
                start=join, end=join)
     for effect in output.get("effects", []):
+        a = effect["target_start_us"]
+        b = a + effect["duration_us"]
+        op_id = effect["item_id"].split("/")[-1]
         if effect["kind"] == "freeze_frame":
+            names = []
+            for t, label in ((b - frame_us, "freeze-last"), (b, "resume")):
+                if 0 <= t < descriptor["duration_us"]:
+                    image = frame_dir / f"t{t}us_{label}.png"
+                    _export_frame(Path(descriptor["path"]), t, lead, image)
+                    names.append(image.name)
             _check(rows, f"freeze-{effect['item_id']}", "freeze_frames", "needs_human", "automatic",
-                   f"Review every covered frame and the frames around target {effect['target_start_us']}us.",
-                   intent_id=effect["item_id"].split("/")[-1], start=effect["target_start_us"],
-                   end=effect["target_start_us"] + effect["duration_us"])
+                   f"Review the held frame and the hand-back to playback: {frame_dir.name}/{', '.join(names)}; "
+                   "check for flashes of old content or a frozen new animation.",
+                   intent_id=op_id, start=a, end=b)
+        elif effect["kind"] == "mute":
+            inner = max(0, effect["duration_us"] - 40_000)
+            level = _rms_dbfs(Path(descriptor["path"]), a + 20_000, inner) if inner else None
+            if level is None:
+                _check(rows, f"mute-{effect['item_id']}-{a}", "mute_silence", "not_run", "automatic",
+                       "No audio samples could be measured in the muted range.",
+                       intent_id=op_id, start=a, end=b)
+            else:
+                shown = "digital silence" if level == float("-inf") else f"{level:.1f} dBFS"
+                _check(rows, f"mute-{effect['item_id']}-{a}", "mute_silence",
+                       "passed" if level <= _SILENCE_DBFS else "failed", "automatic",
+                       f"Output audio in the muted range measures {shown} (threshold {_SILENCE_DBFS} dBFS).",
+                       intent_id=op_id, start=a, end=b)
     _check(rows, "listening", "listening", "needs_human", "human",
            "Listen to every cut, the opening and the ending.")
     _check(rows, "pacing", "pacing", "needs_human", "human", "Judge pacing at semantic joins.")

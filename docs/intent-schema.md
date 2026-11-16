@@ -120,6 +120,9 @@ validator 在 `[scope_start_us, scope_end_us)` 内重新查找 `text` 的全部�
   - `freeze_cover`：在 `[start,end)` 内用 `frame` 的画面覆盖，同期声音继续，时长不变。
     `purpose: clean_cut_in` 用后面的干净新画面清理残留；`semantic_pause` 用前面的收尾画面配合保留的源尾段做停顿。
     `visual_review` 写明看过的证据和观察结果；没有看图能力时状态为 `needs_human`。
+    剪辑准则要求每个开头和接缝都清理前一主题残留，这类定格不一定出现在意见文字里：
+    此时 `covers` 可以为空，但必须写 `standard_rule: "clean_cut_in"` 且 `purpose: "clean_cut_in"`，
+    `source_text` 取所在片段那条意见的原文。删除、静音和其他操作仍必须对应意见文字。
 - `must_keep`：保护短语，来源是意见中的 span，或 Taskboard 输入中的 `must_keep` 字段。
 
 `rationale` 写理由，只进入意图文件和回执，**不写进** `source_text`。
@@ -154,7 +157,7 @@ validator 按顺序执行，任何一条不满足都在写计划前失败，不�
 | V02 | `raw_text` 与输入中的原意见逐码点相同，`raw_text_sha256` 为其 UTF-8 字节的哈希 |
 | V03 | `bindings` 中的源哈希、时长、对齐哈希与当前文件一致；`evidence_manifest_sha256` 与清单文件一致 |
 | V04 | 所有 `evidence_id` 在清单中存在，且清单条目的 `source_sha256` 与所引用的源一致 |
-| V05 | 覆盖规则 1–4 全部满足 |
+| V05 | 覆盖规则 1–4 全部满足；`covers` 为空的操作只能是带 `standard_rule` 的 clean_cut_in 定格 |
 | V06 | `status: proposed` 时没有阻断性 disposition，也没有 `blockers` |
 | V07 | 每个 `time_ref` 按“时间来源”表重算后等于 `value_us` |
 | V08 | 每个 `word_span` 的候选集合与选择依据按“重复语句与候选选择”复核通过 |

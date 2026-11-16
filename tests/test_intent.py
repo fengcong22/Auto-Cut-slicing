@@ -309,3 +309,47 @@ def test_cli_validates_and_compiles_intent(case, capsys):
                  str(case["context_path"]), "--job", str(case["dir"] / "j.json"),
                  "--receipt", str(case["dir"] / "r.json")]) == 1
     assert json.loads(capsys.readouterr().out)["problems"][0]["rule"] == "V07"
+
+
+def _freeze_op(case, frame_us, *, covers=None, standard_rule="clean_cut_in", purpose="clean_cut_in"):
+    frame = {"ref": "frame", "value_us": frame_us, "source_id": "talk", "source_sha256": case["sha"],
+             "evidence_id": "fr"}
+    op = {"intent_id": "freeze-1", "kind": "freeze_cover", "covers": covers or [], "purpose": purpose,
+          "start": {"ref": "source_edge", "value_us": 0, "source_id": "talk", "edge": "start"},
+          "end": frame, "frame": frame,
+          "visual_review": {"status": "ai_reviewed", "evidence_ids": ["fr"], "observation": "clean"},
+          "rationale": "standard"}
+    if standard_rule:
+        op["standard_rule"] = standard_rule
+    return op
+
+
+def test_standards_driven_freeze_needs_no_feedback_span_but_other_ops_do(case):
+    evidence.frames(case["context"], "talk", "fr", [400_000])
+    intent = _intent(case)
+    intent["bindings"]["evidence_manifest_sha256"] = file_sha256(case["dir"] / "evidence" / "manifest.json")
+    clip = intent["outputs"][0]["clips"][0]
+    clip["operations"].append(_freeze_op(case, 400_000))
+    path = _write(case, intent)
+    assert validate(path, case["context"])["ok"]
+    compile_intent(path, case["context"], case["dir"] / "job.json", case["dir"] / "r.json")
+    edits = read_json(case["dir"] / "job.json")["outputs"][0]["clips"][0]["edits"]
+    assert edits[0]["kind"] == "freeze_frame" and edits[0]["source_text"] == RAW
+    clip["operations"][-1] = _freeze_op(case, 400_000, standard_rule=None)
+    assert ("V05", "INTENT_CONFLICT") in _codes(validate(_write(case, intent, "no-rule.json"), case["context"]))
+    clip["operations"][0]["covers"] = []
+    clip["operations"][-1] = _freeze_op(case, 400_000)
+    assert ("V01", "INTENT_CONFLICT") in _codes(validate(_write(case, intent, "no-span.json"), case["context"]))
+
+
+def test_qa_measures_a_mute_as_silence(case):
+    from auto_cut_slicing.qa import run_qa
+
+    intent = _intent(case)
+    op = intent["outputs"][0]["clips"][0]["operations"][0]
+    op["kind"] = "mute_phrase"
+    path, plan, video = _render(case, intent, "mute")
+    run_qa(case["context"], path, plan, "out", video, None, case["dir"] / "qa-mute.json")
+    checks = {row["kind"]: row for row in read_json(case["dir"] / "qa-mute.json")["checks"]}
+    assert checks["mute_silence"]["status"] == "passed"
+    assert checks["duration_match"]["status"] == "passed"

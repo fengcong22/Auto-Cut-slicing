@@ -86,6 +86,8 @@
   偏移更大时复核内容并在 `rationale` 中写明理由。不为凑 ASR 整句带入更早的引入语。
 - 终点：落在词内或句内时补到当前句末，不带入下一句。
 - 开头或接缝残留前一主题时，用后面已确认干净的新画面 `freeze_cover`（`clean_cut_in`），覆盖到内容自然恢复，声音继续。
+  意见没有提到时也要做：`covers` 留空并写 `standard_rule: "clean_cut_in"`。
+  选帧时导出切入点之后的若干帧逐张查看，取第一张完全干净、且后续自然播放仍干净的帧；覆盖终点就取这一帧。
 - 接缝过快需要停顿时，只能保留源中已有、无下一词的尾段，并用前画面 `freeze_cover`（`semantic_pause`）；
   尾段不够时报告 `INTENT_UNSUPPORTED_OPERATION` 或 `INTENT_NEEDS_USER_DECISION`，不伪造空白。
 
@@ -120,7 +122,8 @@
 | `cut_not_inside_word`：切点不在词内 | 源 ASR 词界对照计划切点 | `passed` / `failed` |
 | `sentence_complete`：终点句子完整 | 句界证据 | `passed` / `failed` / `needs_human` |
 | `seam_gap` / `seam_discontinuity`：接缝间隔、爆音 | 词间隔与波形对照 | `passed` / `failed` / `needs_human` |
-| `opening_frame` / `seam_frames` / `freeze_frames`：画面无残留、无闪回 | 查看导出的帧 | `ai_reviewed` / `needs_human` / `failed` |
+| `opening_frame` / `seam_frames` / `freeze_frames`：画面无残留、无闪回 | 查看导出的帧（定格另导出最后一帧和恢复播放第一帧） | `ai_reviewed` / `needs_human` / `failed` |
+| `mute_silence`：静音区间确实无声 | 测量成片该区间的音频电平，阈值 −60 dBFS，不需要 ASR | `passed` / `failed` / `not_run` |
 | `unlisted_change`：没有意见之外的改动 | 计划操作与覆盖表对照 | `passed` / `failed` |
 | `listening` / `pacing`：听感与节奏 | 只能由人完成 | `needs_human` / `not_run` / `failed` |
 
