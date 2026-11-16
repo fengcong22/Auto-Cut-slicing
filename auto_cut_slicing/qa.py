@@ -51,6 +51,29 @@ def _gray(video: Path, at_us: int) -> bytes:
     ).stdout
 
 
+def _gray_run(video: Path, start_us: int, duration_us: int) -> list[bytes]:
+    from .media import find_tool
+
+    raw = subprocess.run(
+        [find_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin",
+         "-ss", f"{start_us / 1_000_000:.6f}", "-t", f"{duration_us / 1_000_000:.6f}", "-i", str(video),
+         "-vf", "fps=25,scale=48:27,format=gray", "-f", "rawvideo", "-"],
+        check=True, capture_output=True,
+    ).stdout
+    size = 48 * 27
+    return [raw[i:i + size] for i in range(0, len(raw) - size + 1, size)]
+
+
+def _hidden_motion(source_path: Path, start_us: int, end_us: int) -> tuple[float, int | None]:
+    """Largest frame-to-frame change inside a source range a freeze replaces, and where it occurs."""
+    frames = _gray_run(source_path, start_us, end_us - start_us)
+    steps = [(_difference(a, b), index) for index, (a, b) in enumerate(zip(frames, frames[1:]), start=1)]
+    if not steps:
+        return 0.0, None
+    worst, index = max(steps)
+    return worst, start_us + index * 40_000
+
+
 def _difference(a: bytes, b: bytes) -> float:
     if not a or len(a) != len(b):
         return float("inf")
@@ -337,9 +360,24 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
                     image = frame_dir / f"t{t}us_{label}.png"
                     _export_frame(Path(descriptor["path"]), t, lead, image)
                     names.append(image.name)
+            source = context.source(effect["source_id"])
+            motion, at = _hidden_motion(Path(source["path"]), effect["source_start_us"], effect["source_end_us"])
+            hidden = ""
+            if motion > 3.0:
+                after, _ = _hidden_motion(Path(source["path"]), effect["source_end_us"],
+                                          min(effect["source_end_us"] + 240_000, source["duration_us"]))
+                if after < 1.0:
+                    hidden = (f" The freeze hides source motion up to {motion:.1f} (around source {at}us) that has "
+                              "already stopped when playback resumes: a transition into the next picture may be "
+                              "skipped. End the freeze at the transition's first frame, or at the first frame where "
+                              "old content is covered, and let the rest play.")
+                else:
+                    hidden = (f" The freeze hides the start of source motion (up to {motion:.1f} around source "
+                              f"{at}us) that continues after playback resumes; confirm the hidden frames are the "
+                              "ones showing old content.")
             _check(rows, f"freeze-{effect['item_id']}", "freeze_frames", "needs_human", "automatic",
                    f"Review the held frame and the hand-back to playback: {frame_dir.name}/{', '.join(names)}; "
-                   "check for flashes of old content or a frozen new animation.",
+                   f"check for flashes of old content or a frozen new animation.{hidden}",
                    intent_id=op_id, start=a, end=b)
         elif effect["kind"] == "mute":
             inner = max(0, effect["duration_us"] - 40_000)

@@ -492,3 +492,45 @@ def test_qa_requires_the_previous_picture_during_a_seam_pause(tmp_path):
     holds_previous = checked("hold", [{"id": "hold", "kind": "freeze_frame", "start": 3.2, "end": 4.0,
                                        "frame_time": 1.36, "source_text": "停顿还要再长"}])
     assert [row["status"] for row in holds_previous] == ["passed"]
+
+
+def test_qa_warns_when_a_freeze_skips_a_finished_transition(tmp_path):
+    from auto_cut_slicing.planner import compile_job
+    from auto_cut_slicing.qa import run_qa
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg required")
+    # Red picture, then a white bar sweeps across 3.0-3.6 s (a transition), then a static blue picture.
+    source = tmp_path / "sweep.mp4"
+    tone = "0.5*sin(2*PI*500*t)*(between(t,0.5,1.0)+between(t,4.0,4.5))"
+    video = ("color=c=red:s=160x90:r=25:d=6[bg];color=c=blue:s=160x90:r=25:d=6[b];"
+             "[bg][b]overlay=enable='gte(t,3.6)'[c];color=c=white:s=40x90:r=25:d=6[w];"
+             "[c][w]overlay=x='(t-3.0)*300-40':enable='between(t,3.0,3.6)'")
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", video, "-f", "lavfi", "-i",
+                    f"aevalsrc='{tone}':s=48000:d=6", "-t", "6", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)], check=True, capture_output=True)
+    sha = file_sha256(source)
+    write_json(tmp_path / "s.words.json", _asr(sha, [("一。", [("一", 0.5, 1.0)]), ("二。", [("二", 4.0, 4.5)])]))
+    context = EditContext(write_json(tmp_path / "context.json", {
+        "schema": "auto-cut-slicing/intent-context", "schema_version": 1, "timeline_basis": "local_source",
+        "sources": [{"source_id": "s", "path": "sweep.mp4", "asr": "s.words.json"}],
+        "instructions": [{"instruction_id": "i1", "raw_text": "x"}], "evidence_dir": "evidence"}))
+    intent = write_json(tmp_path / "intent.json", {"not": "an intent"})
+
+    def freeze_detail(name, freeze_end):
+        edits = [{"id": "hold", "kind": "freeze_frame", "start": 2.8, "end": freeze_end, "frame_time": 1.36,
+                  "source_text": "停顿还要再长"}]
+        job = write_json(tmp_path / f"{name}.json", {"schema_version": 1, "name": name,
+                         "sources": [{"id": "s", "path": str(source)}], "outputs": [{"id": "out", "name": name,
+                         "clips": [{"id": "a", "source": "s", "start": 0, "end": 1.4},
+                                   {"id": "b", "source": "s", "start": 2.8, "end": 5, "edits": edits}]}]})
+        plan = compile_job(job)
+        plan_path = write_json(tmp_path / f"{name}-plan.json", plan)
+        out = tmp_path / f"{name}.mp4"
+        render_output(plan, "out", out)
+        run_qa(context, intent, plan_path, "out", out, None, tmp_path / f"{name}-qa.json")
+        return next(r["detail"] for r in read_json(tmp_path / f"{name}-qa.json")["checks"]
+                    if r["kind"] == "freeze_frames")
+
+    assert "may be skipped" in freeze_detail("skips", 3.8)
+    assert "continues after playback resumes" in freeze_detail("plays", 3.2)
