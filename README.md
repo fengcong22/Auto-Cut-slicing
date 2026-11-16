@@ -19,8 +19,8 @@
 
 由 AI 理解自然语言意见、按证据写意图计划、执行并检查意见是否落实的流程见
 [AI 参与剪辑工作流](docs/ai-editing-workflow.md)，意图格式见 [意图计划](docs/intent-schema.md) 和
-[schemas/](schemas/)。已提供 `evidence`（转写窗口、短语候选、解码帧）、`intent validate|compile` 和 `qa` 命令；
-停顿测量、QA 画面复核文件和 [VM / PMO v3](docs/vm-pmo-offline-contract-v3.md) 尚未实现。
+[schemas/](schemas/)。已提供 `evidence`（转写窗口、短语候选、解码帧、停顿测量）、`intent validate|compile` 和 `qa` 命令；
+QA 画面复核文件和 [VM / PMO v3](docs/vm-pmo-offline-contract-v3.md) 尚未实现。
 
 ## 本机开发
 

@@ -21,7 +21,7 @@ JSON Schema 只检查结构。本文的“校验规则”是语义要求，valid
 | 本文、JSON Schema、示例 | 已定稿；`auto_cut_slicing/schema.py` 按仓库内 schema 校验，不依赖第三方包 |
 | `intent validate` / `intent compile` 命令 | 已实现（`auto_cut_slicing/intent.py`），执行 V01–V14 |
 | 规划器按 `word_indices` 定位 | 不改规划器：编译时用 `text` + `rough_time` + 收窄的 `search_radius` 让现有唯一匹配落到选定的那一处，再由 V14 核对 |
-| `audio_point` / `gap_choice` 时间来源 | **未实现**：没有 audio-gap 证据工具，校验时会以 `INTENT_EVIDENCE_MISSING` 拒绝 |
+| `audio_point` / `gap_choice` 时间来源 | 已实现：引用 `evidence audio-gap` 的测量结果 |
 | VM/PMO 协议携带意图 | **未实现**，设计见 [v3 草案](vm-pmo-offline-contract-v3.md) |
 
 不得把“未实现”的命令写成已执行，也不得声称 validator 已经校验过某个意图文件。
@@ -51,10 +51,17 @@ plan.json → MP4 → qa.json   ← qa-report 绑定 intent、plan 与成片哈�
 | `word_edge` | ASR 某个词的起点或终点 | `alignment_sha256` 与当前对齐一致，`index` 处词文本等于 `text`，取 `edge` 得到 `value_us`。若声明 `claim: sentence_end/sentence_start`，还要用句界模块确认 |
 | `frame` | 真实解码帧的源时间戳 | `source_sha256` 与源一致，`value_us` 出现在 `evidence_id` 对应条目的 `frame_times_us` 中 |
 | `source_edge` | 源文件开头或结尾 | `0` 或源时长 |
-| `audio_point` | audio-gap 测得的衰减结束、低能量区间或下一词起点 | 读取对应证据文件中的同名测量值 |
-| `gap_choice` | 在已测得的无下一词区间内选定的停顿终点 | `lower_us ≤ value_us ≤ upper_us`，区间须与证据文件一致；`user_duration` 还要从 `duration_span` 解析时长并相符 |
+| `audio_point` | audio-gap 测得的衰减结束、低能量区间或下一词起点 | 证据文件哈希与清单一致，`value_us` 等于其中同名测量值 |
+| `gap_choice` | 在已测得的窗口内选定的切点 | `[lower_us, upper_us]` 必须等于证据中的 `out_window`（出点）或 `in_window`（入点），值在窗口内；`user_duration` 的值由时长算出，见下 |
 
-`gap_choice` 是唯一允许 AI 在区间内自行取值的来源，只用于语义停顿的长度。
+`gap_choice` 是唯一允许 AI 在区间内自行取值的来源，只用于尾音、气口和语义停顿的长度。
+
+audio-gap 的窗口：
+- `out_window = [decay_end, next_onset − 40ms]`：出点保留上一词完整衰减，且不进入下一词起音前一帧。
+- `in_window = [decay_end + 40ms, next_onset]`：入点不带上一词残音，也不切掉下一词起音。
+
+`basis: user_duration` 时，从 `duration_span` 解析唯一时长 d（`1s`、`0.6秒`、`一秒`、`1s左右` 都可），
+出点取 `上一词 ASR 终点 + d`，入点取 `next_onset − d`，再夹到窗口内；值必须等于这个结果，不能另选。
 它的区间来自测量，区间之外不可取值；成片 QA 中对应的 `pacing` 检查只能是 `needs_human`。
 
 ## 意见覆盖

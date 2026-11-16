@@ -225,3 +225,27 @@ def frames(context, source_id, evidence_id, at_us: list[int], *, neighbors=0, wi
     limitations = ["Images show decoded frames only; picture content and cleanliness need visual review."]
     return _register(context, _row(context, evidence_id, "frames", source_id, params, limitations,
                                    frame_times_us=[row["frame_time_us"] for row in rows]), payload)
+
+
+def audio_gap(context, source_id, evidence_id, *, after_word=None, at_us=None):
+    """Measure the previous word's decay and the next word's onset in one word gap."""
+    from .audio import analyze_gap, word_gap_index
+
+    if (after_word is None) == (at_us is None):
+        raise SlicingError("Choose exactly one of after_word or at")
+    _ensure_new(context, evidence_id)
+    source = context.source(source_id)
+    alignment = context.alignment(source_id)
+    words = alignment["words"]
+    index = after_word if after_word is not None else word_gap_index(words, at_us)
+    payload = {"source_sha256": source["sha256"], "alignment_sha256": alignment["sha256"],
+               **analyze_gap(source["path"], words, index, source["duration_us"])}
+    params = {"after_word": index, "at_us": at_us}
+    limitations = [
+        "Energy-based: low energy is not proof of silence; breaths or background sound move both edges.",
+        "out_window is for an outgoing cut (keeps the decay, stops before the next onset); "
+        "in_window is for an incoming cut. Listen to the chosen point.",
+    ]
+    if payload["decay_end"] is None:
+        limitations.append("The previous word does not decay below the threshold before the next word.")
+    return _register(context, _row(context, evidence_id, "audio_gap", source_id, params, limitations), payload)

@@ -41,7 +41,7 @@
 | 阅读转写 | 已实现：`evidence transcript --context C --source S --id ID --start T --end T`，含词序号、句子和 ≥200ms 停顿 |
 | 查找全部出现位置 | 已实现：`evidence find-phrase --context C --source S --id ID --text 短语 [--scope-start --scope-end --anchor]` |
 | 帧证据 | 已实现：`evidence frames --context C --source S --id ID --at T [--at T] [--neighbors N]`，导出真实解码帧 PNG |
-| 停顿测量 | **未实现**（`evidence audio-gap`）。因此 `audio_point` / `gap_choice` 时间来源会被拒绝，无法在词尾之后自动保留衰减或停顿 |
+| 停顿测量 | 已实现：`evidence audio-gap --context C --source S --id ID (--after-word N \| --at T)`，测量上一词衰减结束、下一词起音和可切窗口 |
 | 意图校验 | 已实现：`intent validate INTENT --context C`，执行 V01–V13，返回问题列表 |
 | 意图编译 | 已实现：`intent compile INTENT --context C --job J --receipt R [--plan P]`，生成现有 job，规划后执行 V14 |
 | 规划与渲染 | 不变：`plan` / `render` / `draft` / `run`；VM/PMO 用 `vm_pmo plan` / `render` |
@@ -90,6 +90,10 @@
   选帧时导出切入点之后的若干帧逐张查看，取第一张完全干净、且后续自然播放仍干净的帧；覆盖终点就取这一帧。
 - 接缝过快需要停顿时，只能保留源中已有、无下一词的尾段，并用前画面 `freeze_cover`（`semantic_pause`）；
   尾段不够时报告 `INTENT_UNSUPPORTED_OPERATION` 或 `INTENT_NEEDS_USER_DECISION`，不伪造空白。
+- 出点不要停在最后一个词的 ASR 终点：先对该词之后的停顿运行 `evidence audio-gap`，出点用 `gap_choice` 落在
+  `out_window` 内。实测样片中 ASR 终点之后普遍还有 0.06–0.32s 衰减，停在 ASR 终点会截掉尾音。
+  **暂定默认（待用户确认）**：取 `min(out_window 上界, decay_end + 0.3s)`，即保留完整衰减再留约 0.3 秒气口。
+  用户写了时长时用 `user_duration`，由时长算出，不再另选。入点同理使用 `in_window`。
 
 ### 4. 写出意图计划
 
@@ -121,7 +125,7 @@
 | `duration_match`：时长与计划一致 | 渲染结果 | `passed` / `failed` |
 | `cut_not_inside_word`：切点不在词内 | 源 ASR 词界对照计划切点 | `passed` / `failed` |
 | `sentence_complete`：终点句子完整 | 句界证据 | `passed` / `failed` / `needs_human` |
-| `seam_gap` / `seam_discontinuity`：接缝间隔、爆音 | 词间隔与波形对照 | `passed` / `failed` / `needs_human` |
+| `seam_gap`：切点不截衰减、不切进下一词起音 | 对每个切点实测上一词衰减与下一词起音（同 audio-gap） | `passed` / `needs_human` |
 | `opening_frame` / `seam_frames` / `freeze_frames`：画面无残留、无闪回 | 查看导出的帧（定格另导出最后一帧和恢复播放第一帧） | `ai_reviewed` / `needs_human` / `failed` |
 | `mute_silence`：静音区间确实无声 | 测量成片该区间的音频电平，阈值 −60 dBFS，不需要 ASR | `passed` / `failed` / `not_run` |
 | `unlisted_change`：没有意见之外的改动 | 计划操作与覆盖表对照 | `passed` / `failed` |

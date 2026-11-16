@@ -70,6 +70,7 @@ ASR 句末标点是句边界候选证据；仅结构验收不能声称已试听�
 意见逐段写覆盖表，每段注明执行、约束、说明或做不到；所有时间只引用用户写出的时间、ASR 词界、
 真实解码帧、源首尾或音频测量，不写没有来源的数字。短语出现多次时，只按唯一、用户时间、
 用户序数或用户上下文选择，否则阻断并列出候选。不确定、缺证据或不支持时明确报告，不用近似操作代替。
-已实现 `evidence transcript|find-phrase|frames`、`intent validate|compile` 和 `qa`，都读取一份 intent-context；
-`evidence audio-gap`、QA 画面复核文件和 VM/PMO v3 尚未实现，见工作流“能力状态”表，不得写成已执行。
+已实现 `evidence transcript|find-phrase|frames|audio-gap`、`intent validate|compile` 和 `qa`，都读取一份 intent-context；
+出点用 audio-gap 实测窗口内的 `gap_choice`，不要停在最后一个词的 ASR 终点。
+QA 画面复核文件和 VM/PMO v3 尚未实现，见工作流“能力状态”表，不得写成已执行。
 `qa` 的 `ready_for_review` 不是验收；质量检查分开记录自动检查、AI 复核和人工试听。

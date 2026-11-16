@@ -36,6 +36,12 @@ UTTERANCES = [
 ]
 
 
+# Tone only inside each word; silence between words, plus a decay tail after 结果 (ends 4.4 s).
+_TONE = "0.5*sin(2*PI*500*t)*(" + "+".join(
+    f"between(t,{a},{b})" for _, rows in UTTERANCES for _t, a, b in rows
+) + "+between(t,4.4,4.8)*exp(-(t-4.4)*20))"
+
+
 def _words(utterances):
     return [{"text": t, "start": a, "end": b} for _, rows in utterances for t, a, b in rows]
 
@@ -56,7 +62,7 @@ def case(tmp_path):
     source = tmp_path / "source.mp4"
     subprocess.run([
         "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25:duration=6",
-        "-f", "lavfi", "-i", "sine=frequency=500:sample_rate=48000:duration=6",
+        "-f", "lavfi", "-i", f"aevalsrc='{_TONE}':s=48000:d=6",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
         "-shortest", str(source)], check=True, capture_output=True)
     sha = file_sha256(source)
@@ -353,3 +359,94 @@ def test_qa_measures_a_mute_as_silence(case):
     checks = {row["kind"]: row for row in read_json(case["dir"] / "qa-mute.json")["checks"]}
     assert checks["mute_silence"]["status"] == "passed"
     assert checks["duration_match"]["status"] == "passed"
+
+
+def test_audio_gap_measures_decay_onset_and_cut_windows(case):
+    result = evidence.audio_gap(case["context"], "talk", "gap-result", after_word=9)
+    gap = read_json(result["path"])
+    assert gap["previous_word"]["text"] == "结果" and gap["next_word"]["text"] == "最后"
+    assert 4_500_000 <= gap["decay_end"] <= 4_650_000
+    assert abs(gap["low_energy_end"] - 4_900_000) <= 20_000
+    assert gap["out_window"] == {"lower_us": gap["decay_end"], "upper_us": gap["low_energy_end"] - 40_000}
+    assert gap["in_window"]["lower_us"] == gap["decay_end"] + 40_000
+    by_time = read_json(evidence.audio_gap(case["context"], "talk", "gap-at", at_us=4_700_000)["path"])
+    assert by_time["previous_word"]["index"] == 9
+
+
+def _end_with(case, ref, raw=RAW, extra_span=None):
+    intent = _intent(case)
+    if raw != RAW:
+        context_data = read_json(case["context_path"])
+        context_data["instructions"][0]["raw_text"] = raw
+        write_json(case["context_path"], context_data)
+        case["context"] = EditContext(case["context_path"])
+        intent["instructions"][0].update(raw_text=raw, raw_text_sha256=hashlib.sha256(raw.encode()).hexdigest())
+    if extra_span:
+        intent["coverage"].append({"span": extra_span, "quote": raw[extra_span["start"]:extra_span["end"]],
+                                   "disposition": "operation", "intent_ids": ["clip-1"], "reason": "tail"})
+        intent["outputs"][0]["clips"][0]["covers"].append(extra_span)
+    intent["bindings"]["evidence_manifest_sha256"] = file_sha256(case["dir"] / "evidence" / "manifest.json")
+    intent["outputs"][0]["clips"][0]["end"] = {"mode": "time", "at": ref}
+    # The end no longer cites "0:05.60", so the phrase scope uses the source edge instead.
+    intent["outputs"][0]["clips"][0]["operations"][0]["phrase"]["selection"]["scope_end_us"] = case["duration"]
+    return intent
+
+
+def test_gap_choice_and_audio_point_must_match_measurements(case):
+    gap = read_json(evidence.audio_gap(case["context"], "talk", "gap-end", after_word=11)["path"])
+    window = gap["out_window"]
+    choice = {"ref": "gap_choice", "value_us": window["lower_us"] + 200_000, "evidence_id": "gap-end",
+              "lower_us": window["lower_us"], "upper_us": window["upper_us"], "basis": "ai_pacing",
+              "rationale": "保留尾音并留短停顿"}
+    path = _write(case, _end_with(case, choice))
+    assert validate(path, case["context"])["ok"]
+    compile_intent(path, case["context"], case["dir"] / "job.json", case["dir"] / "r.json")
+    assert read_json(case["dir"] / "job.json")["outputs"][0]["clips"][0]["end"] == (window["lower_us"] + 200_000) / 1e6
+    outside = dict(choice, value_us=window["upper_us"] + 10_000)
+    assert ("V07", "INTENT_TIME_UNSOURCED") in _codes(validate(_write(case, _end_with(case, outside), "o.json"), case["context"]))
+    made_up = dict(choice, upper_us=window["upper_us"] + 50_000)
+    assert ("V07", "INTENT_TIME_UNSOURCED") in _codes(validate(_write(case, _end_with(case, made_up), "m.json"), case["context"]))
+    point = {"ref": "audio_point", "value_us": gap["decay_end"], "evidence_id": "gap-end", "point": "decay_end"}
+    assert validate(_write(case, _end_with(case, point), "p.json"), case["context"])["ok"]
+    wrong = dict(point, value_us=gap["decay_end"] + 10_000)
+    assert ("V07", "INTENT_TIME_UNSOURCED") in _codes(validate(_write(case, _end_with(case, wrong), "w.json"), case["context"]))
+
+
+def test_user_duration_fixes_the_gap_choice(case):
+    raw = RAW + "，结尾留0.3秒"
+    gap = read_json(evidence.audio_gap(case["context"], "talk", "gap-end", after_word=11)["path"])
+    window = gap["out_window"]
+    tail = {"instruction_id": "i1", "start": raw.index("结尾留0.3秒"), "end": len(raw)}
+    duration = {"instruction_id": "i1", "start": raw.index("0.3秒"), "end": len(raw)}
+    expected = min(max(gap["previous_word"]["end_us"] + 300_000, window["lower_us"]), window["upper_us"])
+    choice = {"ref": "gap_choice", "value_us": expected, "evidence_id": "gap-end",
+              "lower_us": window["lower_us"], "upper_us": window["upper_us"], "basis": "user_duration",
+              "duration_span": duration, "rationale": "用户要求结尾留 0.3 秒"}
+    assert validate(_write(case, _end_with(case, choice, raw, tail)), case["context"])["ok"]
+    off = dict(choice, value_us=expected - 50_000)
+    assert ("V07", "INTENT_TIME_UNSOURCED") in _codes(
+        validate(_write(case, _end_with(case, off, raw, tail), "off.json"), case["context"]))
+
+
+def test_qa_flags_a_cut_inside_the_measured_decay(case):
+    from auto_cut_slicing.qa import run_qa
+
+    raw = "0:00-0:04.45"
+    context_data = read_json(case["context_path"])
+    context_data["instructions"][0]["raw_text"] = raw
+    write_json(case["context_path"], context_data)
+    case["context"] = EditContext(case["context_path"])
+    span = {"instruction_id": "i1", "start": 0, "end": len(raw)}
+    intent = _intent(case)
+    intent["instructions"][0].update(raw_text=raw, raw_text_sha256=hashlib.sha256(raw.encode()).hexdigest())
+    intent["coverage"] = [{"span": span, "quote": raw, "disposition": "operation",
+                           "intent_ids": ["clip-1"], "reason": "range"}]
+    clip = intent["outputs"][0]["clips"][0]
+    clip.update(covers=[span], operations=[])
+    clip["start"]["at"]["span"] = {"instruction_id": "i1", "start": 0, "end": 4}
+    clip["end"]["at"] = {"ref": "user_anchor", "value_us": 4_450_000,
+                         "span": {"instruction_id": "i1", "start": 5, "end": len(raw)}}
+    path, plan, video = _render(case, intent, "decay")
+    run_qa(case["context"], path, plan, "out", video, None, case["dir"] / "qa-decay.json")
+    seam = [row for row in read_json(case["dir"] / "qa-decay.json")["checks"] if row["kind"] == "seam_gap"]
+    assert len(seam) == 1 and seam[0]["status"] == "needs_human" and "decay" in seam[0]["detail"]

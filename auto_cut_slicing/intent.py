@@ -9,6 +9,7 @@ import hashlib
 import re
 import tempfile
 import unicodedata
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -66,11 +67,26 @@ def parse_user_time(text: str) -> int:
     if match:
         number = match[1]
         if re.fullmatch(r"\d+(?:\.\d+)?", number):
-            return parse_time_us(number if "." in number else int(number), field="user time")
+            return parse_time_us(Decimal(number), field="user time")
         converted = _cn_number(number)
         if converted is not None:
             return converted * 1_000_000
     raise SlicingError(f"Cannot parse a user-written time from {text!r}")
+
+
+def parse_user_duration(text: str) -> int:
+    """Parse exactly one duration the user wrote: 1s, 1秒, 0.6秒, 一秒, 1s左右."""
+    value = text.translate(_DIGITS)
+    found = re.findall(r"([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十]+)\s*(?:秒钟?|s|S)", value)
+    if len(found) != 1:
+        raise SlicingError(f"Cannot parse exactly one duration from {text!r}")
+    number = found[0]
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", number):
+        return parse_time_us(Decimal(number), field="user duration")
+    converted = _cn_number(number)
+    if converted is None:
+        raise SlicingError(f"Cannot parse a duration from {text!r}")
+    return converted * 1_000_000
 
 
 def parse_ordinal(text: str) -> tuple[int, bool]:
@@ -267,9 +283,49 @@ class _Checker:
                 self.add("V07", "INTENT_TIME_UNSOURCED", "time is not a decoded frame in that evidence", path)
                 return None
             return value if row is not None else None
-        self.add("V07", "INTENT_EVIDENCE_MISSING",
-                 f"{kind} needs audio-gap evidence, which this version does not produce", path)
-        return None
+        row = self.evidence(ref["evidence_id"], path, kind={"audio_gap"}, source=source)
+        payload = self.payload(row, path) if row is not None else None
+        if payload is None:
+            return None
+        if kind == "audio_point":
+            expected = payload.get(ref["point"])
+            if expected is None or value != expected:
+                self.add("V07", "INTENT_TIME_UNSOURCED", f"measured {ref['point']} is {expected}", path)
+                return None
+            return value
+        windows = {name: payload.get(name) for name in ("out_window", "in_window")}
+        side = next((name for name, w in windows.items()
+                     if w and (w["lower_us"], w["upper_us"]) == (ref["lower_us"], ref["upper_us"])), None)
+        if side is None:
+            self.add("V07", "INTENT_TIME_UNSOURCED", "lower/upper is not a measured out/in window", path)
+            return None
+        if not ref["lower_us"] <= value <= ref["upper_us"]:
+            self.add("V07", "INTENT_TIME_UNSOURCED", "gap_choice is outside its measured window", path)
+            return None
+        if ref["basis"] == "user_duration":
+            text = self.span_text(ref["duration_span"], path, "V07")
+            if text is None:
+                return None
+            try:
+                duration = parse_user_duration(text)
+            except SlicingError as error:
+                self.add("V07", "INTENT_TIME_UNSOURCED", str(error), path)
+                return None
+            target = (payload["previous_word"]["end_us"] + duration if side == "out_window"
+                      else payload["low_energy_end"] - duration)
+            expected = min(max(target, ref["lower_us"]), ref["upper_us"])
+            if value != expected:
+                self.add("V07", "INTENT_TIME_UNSOURCED",
+                         f"{text!r} on the {side} gives {expected}us, not {value}us", path)
+                return None
+        return value
+
+    def payload(self, row, path):
+        target = self.context.evidence_dir / row["path"]
+        if not target.is_file() or file_sha256(target) != row["sha256"]:
+            self.add("V04", "INTENT_EVIDENCE_STALE", f"evidence file {row['path']} changed or is missing", path)
+            return None
+        return read_json(target)
 
     # V08 -----------------------------------------------------------------------
     def word_span(self, span, path, source_id, source, *, purpose, allowed_scope):

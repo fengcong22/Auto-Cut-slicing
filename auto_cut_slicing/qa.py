@@ -59,6 +59,29 @@ def _rms_dbfs(video: Path, start_us: int, duration_us: int) -> float | None:
     return 20 * math.log10(rms / 32768) if rms > 0 else float("-inf")
 
 
+def _seam_status(context, source_id, words, side, cut, inside, before, after):
+    """Compare a cut with the measured decay of the previous word and onset of the next."""
+    from .audio import analyze_gap
+
+    if inside:
+        return "needs_human", "automatic", "Cut splits a word; see cut_not_inside_word."
+    if before is None:
+        return "needs_human", "automatic", f"{side} cut at {cut}us precedes the first ASR word; listen."
+    source = context.source(source_id)
+    index = words.index(before)
+    gap = analyze_gap(source["path"], words, index, source["duration_us"])
+    decay, onset = gap["decay_end"], gap["low_energy_end"]
+    label = f"{side} cut at source {cut}us after {before['text']!r}"
+    if decay is None:
+        return "needs_human", "automatic", f"{label}: no measurable pause before {after['text'] if after else 'the end'!r}."
+    numbers = f"decay ends {decay}us, next onset {onset}us (threshold {gap['threshold_dbfs']} dBFS)"
+    if cut < decay:
+        return "needs_human", "automatic", f"{label} cuts {decay - cut}us of the word's decay; {numbers}."
+    if cut > onset:
+        return "needs_human", "automatic", f"{label} includes {cut - onset}us of the next word's onset; {numbers}."
+    return "passed", "automatic", f"{label} lies in the measured pause; {numbers}. Pacing still needs listening."
+
+
 def _cuts(output: dict[str, Any], durations: dict[str, int]):
     """Yield (segment, side, source_us, target_us) for every cut inside a source."""
     for segment in output["segments"]:
@@ -134,12 +157,8 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
         _check(rows, prefix, "cut_not_inside_word", "failed" if inside else "passed", "automatic",
                f"{where} splits {inside[0]['text']!r}" if inside else f"{where} is between words",
                intent_id=segment["clip_id"], start=target, end=target)
-        gap_before = cut - before["end_us"] if before else None
-        gap_after = after["start_us"] - cut if after else None
-        _check(rows, f"{prefix}-gap", "seam_gap", "needs_human", "automatic",
-               f"{where}: {gap_before}us after {before['text'] if before else '-'!r}, "
-               f"{gap_after}us before {after['text'] if after else '-'!r}. "
-               "A 0us gap after the last word may clip its decay; listen to the join.",
+        _check(rows, f"{prefix}-gap", "seam_gap", *_seam_status(context, segment["source_id"], words, side,
+                                                                cut, inside, before, after),
                intent_id=segment["clip_id"], start=target, end=target)
         if (segment["source_id"], cut) in deletion_edges:
             _check(rows, f"{prefix}-sentence", "sentence_complete", "passed", "automatic",

@@ -56,7 +56,8 @@ def parser() -> argparse.ArgumentParser:
     kinds = evidence.add_subparsers(dest="evidence_command", required=True)
     for name, text in (("transcript", "导出时间窗内的词、句和停顿"),
                        ("find-phrase", "列出短语的全部完整词元匹配"),
-                       ("frames", "导出真实解码帧图片")):
+                       ("frames", "导出真实解码帧图片"),
+                       ("audio-gap", "测量词尾衰减和下一词起音，给出可切窗口")):
         sub = kinds.add_parser(name, help=text)
         sub.add_argument("--context", required=True, type=Path)
         sub.add_argument("--source", required=True)
@@ -69,6 +70,9 @@ def parser() -> argparse.ArgumentParser:
     kinds.choices["find-phrase"].add_argument("--anchor")
     kinds.choices["frames"].add_argument("--at", required=True, action="append")
     kinds.choices["frames"].add_argument("--neighbors", type=int, default=0)
+    gap = kinds.choices["audio-gap"].add_mutually_exclusive_group(required=True)
+    gap.add_argument("--after-word", type=int)
+    gap.add_argument("--at")
     intent = commands.add_parser("intent", help="校验或编译 AI 剪辑意图")
     actions = intent.add_subparsers(dest="intent_command", required=True)
     for name in ("validate", "compile"):
@@ -138,6 +142,9 @@ def dispatch(args) -> dict:
                 context, args.source, args.id, args.text,
                 scope_start_us=_cli_us(args.scope_start) or 0,
                 scope_end_us=_cli_us(args.scope_end), anchor_us=_cli_us(args.anchor))
+        if args.evidence_command == "audio-gap":
+            return evidence.audio_gap(context, args.source, args.id,
+                                      after_word=args.after_word, at_us=_cli_us(args.at))
         return evidence.frames(
             context, args.source, args.id, [_cli_us(v) for v in args.at], neighbors=args.neighbors)
     if args.command == "intent":
