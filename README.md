@@ -15,12 +15,12 @@
 技能的版本化源文件为 `skills/auto-cut-slicing/SKILL.md`；修改后运行
 `python scripts/install_repo_skills.py` 刷新本仓库 `.codex/skills/` 中的安装副本。
 
-## AI 参与剪辑（规范已定，工具开发中）
+## AI 参与剪辑
 
 由 AI 理解自然语言意见、按证据写意图计划、执行并检查意见是否落实的流程见
 [AI 参与剪辑工作流](docs/ai-editing-workflow.md)，意图格式见 [意图计划](docs/intent-schema.md) 和
-[schemas/](schemas/)。证据工具、意图校验命令、成片 QA 命令和 [VM / PMO v3](docs/vm-pmo-offline-contract-v3.md)
-尚未实现，工作流中列出了现阶段的替代做法。
+[schemas/](schemas/)。已提供 `evidence`（转写窗口、短语候选、解码帧）、`intent validate|compile` 和 `qa` 命令；
+停顿测量、QA 画面复核文件和 [VM / PMO v3](docs/vm-pmo-offline-contract-v3.md) 尚未实现。
 
 ## 本机开发
 

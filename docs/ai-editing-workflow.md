@@ -32,19 +32,24 @@
 
 新会话必须按此表区分可以直接执行的命令和尚未实现的设计，不得把后者写成已执行。
 
-| 能力 | 现行做法 | 规划中的命令（未实现） |
-| --- | --- | --- |
-| 源绑定词级 ASR | `python -m auto_cut_slicing transcribe <源> --output <words.json>` | `analyze` 中自动生成 |
-| 阅读转写 | 直接读 `words.json` 的 `words` / `utterances`，词序号即列表下标 | `evidence transcript` |
-| 查找全部出现位置 | 调用 `auto_cut_slicing.alignment.find_phrase_matches`（见下文“现行替代做法”） | `evidence find-phrase` |
-| 帧证据 | 用 `inspect-freeze --frame-time` 确认时间是真实解码帧；图片导出到 `tmp/` 供查看 | `evidence frames` / `contact-sheet` |
-| 停顿测量 | 读 `words.json` 中相邻词的间隔并试听；没有自动测量，停顿结论为 `needs_human` | `evidence audio-gap` |
-| 意图校验与编译 | 按 [编译映射](intent-schema.md#编译映射) 手工转成 clips，执行 V14 对照 | `intent validate` / `intent compile` |
-| 规划与渲染 | `plan` / `render` / `draft` / `run`；VM/PMO 用 `vm_pmo plan` / `render` | 不变 |
-| 成片反向 ASR | 对成片运行 `transcribe <成片> --output <out.words.json>` | `qa` 中自动执行 |
-| 内容质量检查 | 按下文“质量检查”逐项手工记录，格式遵循 qa-report | `qa` |
-| Taskboard 自动入口携带意图 | **不支持**。v2 只接受固定句式或 `manual_revision` | [v3 草案](vm-pmo-offline-contract-v3.md) |
-| AI 在 Taskboard 中看图 | **未验证**。在验证前，画面判断一律交给审批环节由人复核 | — |
+所有命令都读取一份 [intent-context](../schemas/intent-context.v1.schema.json)：源文件、词级转写、原意见和证据目录，
+路径相对该文件。命令以 `python -m auto_cut_slicing` 开头。
+
+| 能力 | 状态与命令 |
+| --- | --- |
+| 源绑定词级 ASR | 已实现：`transcribe <源> --output <words.json>`（调用锁定的 Auto-Cut Lite 火山 ASR，会产生费用） |
+| 阅读转写 | 已实现：`evidence transcript --context C --source S --id ID --start T --end T`，含词序号、句子和 ≥200ms 停顿 |
+| 查找全部出现位置 | 已实现：`evidence find-phrase --context C --source S --id ID --text 短语 [--scope-start --scope-end --anchor]` |
+| 帧证据 | 已实现：`evidence frames --context C --source S --id ID --at T [--at T] [--neighbors N]`，导出真实解码帧 PNG |
+| 停顿测量 | **未实现**（`evidence audio-gap`）。因此 `audio_point` / `gap_choice` 时间来源会被拒绝，无法在词尾之后自动保留衰减或停顿 |
+| 意图校验 | 已实现：`intent validate INTENT --context C`，执行 V01–V13，返回问题列表 |
+| 意图编译 | 已实现：`intent compile INTENT --context C --job J --receipt R [--plan P]`，生成现有 job，规划后执行 V14 |
+| 规划与渲染 | 不变：`plan` / `render` / `draft` / `run`；VM/PMO 用 `vm_pmo plan` / `render` |
+| 成片反向 ASR | 手动：对成片运行 `transcribe`，再把结果传给 `qa --video-asr` |
+| 内容质量检查 | 已实现：`qa --context C --intent I --plan P --output-id O --video V --report R [--video-asr W]`，并导出接缝帧 |
+| AI 复核 QA 画面（qa-review） | **未实现**。看图后的结论写在报告之外，不能修改 `qa.json` |
+| Taskboard 自动入口携带意图 | **不支持**。v2 只接受固定句式或 `manual_revision`，见 [v3 草案](vm-pmo-offline-contract-v3.md) |
+| AI 在 Taskboard 中看图 | **未验证**。在验证前，画面判断一律交给审批环节由人复核 |
 
 ## 步骤
 
@@ -89,14 +94,12 @@
 - 写 `edit-intent.json`，结构见 [edit-intent.v1](../schemas/edit-intent.v1.schema.json)，示例见
   [examples/edit-intent.json](../examples/edit-intent.json)。
 - 阻断时也写出完整文件（`status: blocked`），已理解的部分照常记录。
-- 自查 [校验规则](intent-schema.md#校验规则) V01–V13。`intent validate` 实现前，
-  在报告中写明“未经 validator 校验，已人工逐条自查”。
+- 运行 `intent validate`，直到没有问题；阻断状态的意图也要能通过校验。
 
 ### 5. 编译与规划
 
-- 按 [编译映射](intent-schema.md#编译映射) 得到 clips，放进本地 `job`、`request` 或（v3 实现后）运行目录。
-- 运行 `plan`（或 `run` / `vm_pmo plan`）。规划器报错时，按错误补证据或改意图，不绕过检查。
-- 执行 V14：对照计划中的 `edits`、`start_cues`、`effects`、`boundary_adjustments`，确认词区间和起点正是选中的那一处。
+- 运行 `intent compile`：它按 [编译映射](intent-schema.md#编译映射) 生成 job，调用规划器并执行 V14，
+  确认计划中的词区间和起点正是选中的那一处。报错时补证据或改意图，不绕过检查。
 
 ### 6. 渲染
 
@@ -156,22 +159,19 @@
 - 手改计划、回执或 MP4；绕过规划器直接用 FFmpeg 生成交付物。
 - 把合成素材或合成 ASR 的测试结果写成真实素材的验收结论。
 
-## 现行替代做法
-
-查找某个短语的全部出现位置（源路径和 ASR 文件替换为实际值）：
+## 命令示例
 
 ```powershell
-$env:PYTHONIOENCODING = 'utf-8'
-python -c "from auto_cut_slicing.media import describe_source; from auto_cut_slicing.alignment import load_alignment, find_phrase_matches; s = describe_source('tmp/x/source.mp4'); a = load_alignment('tmp/x/source.words.json', s); print(find_phrase_matches(a, '我们再看一下', clip_start_us=0, clip_end_us=s['duration_us']))"
+python -m auto_cut_slicing evidence find-phrase --context tmp/x/context.json --source talk --id p-zaikan --text 我们再看一下 --anchor 3:30
+python -m auto_cut_slicing evidence frames --context tmp/x/context.json --source talk --id fr-seam --at 158.75 --at 163 --neighbors 1
+python -m auto_cut_slicing intent validate tmp/x/edit-intent.json --context tmp/x/context.json
+python -m auto_cut_slicing intent compile tmp/x/edit-intent.json --context tmp/x/context.json --job tmp/x/job.json --plan tmp/x/plan.json --receipt tmp/x/compile.json
+python -m auto_cut_slicing render tmp/x/job.json --output-id review --output tmp/x/review.mp4
+python -m auto_cut_slicing qa --context tmp/x/context.json --intent tmp/x/edit-intent.json --plan tmp/x/plan.json --output-id review --video tmp/x/review.mp4 --report tmp/x/qa.json
 ```
 
-确认一个选帧时间是真实解码帧，并查看其后的像素变化候选：
-
-```powershell
-python -m auto_cut_slicing inspect-freeze tmp/x/source.mp4 --frame-time 31.04
-```
-
-`inspect-freeze` 只给像素变化候选（`semantic_verified: false`），画面内容仍需查看图片判断。
+证据写入后，意图的 `bindings.evidence_manifest_sha256` 要等于 `evidence/manifest.json` 当前的哈希；
+新增证据会改变它，需要同步更新意图。`qa` 的接缝帧写到报告旁的 `<报告名>-frames/`，不写入证据清单。
 
 ## 测试素材与验证
 

@@ -12,7 +12,7 @@ Develop on `codex/*`, `feature/*` or `fix/*` branches. It is not an Auto-Cut Lit
   cite a verifiable source (user-written time, ASR word edge, decoded frame, source edge, audio
   measurement). Choose among repeated phrases only by uniqueness, user time, user ordinal or user
   context; otherwise block and list candidates. Report unsupported or unevidenced requests; never
-  describe unimplemented commands (intent/evidence/qa, VM/PMO v3) as executed.
+  describe unimplemented capabilities (evidence audio-gap, QA image review, VM/PMO v3) as executed.
 - This workflow makes real ripple edits: deleting words or paragraphs reduces output duration.
   Keep complete source files; expose each retained range as an editable video/audio segment.
 - Independent slices and ordered multi-source concatenation share one maintained planner.

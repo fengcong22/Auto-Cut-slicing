@@ -9,6 +9,7 @@
 - [edit-intent.v1.schema.json](../schemas/edit-intent.v1.schema.json)
 - [evidence-manifest.v1.schema.json](../schemas/evidence-manifest.v1.schema.json)
 - [qa-report.v1.schema.json](../schemas/qa-report.v1.schema.json)
+- [intent-context.v1.schema.json](../schemas/intent-context.v1.schema.json)：命令读取的本地上下文
 - 示例：[examples/edit-intent.json](../examples/edit-intent.json)
 
 JSON Schema 只检查结构。本文的“校验规则”是语义要求，validator 必须全部执行。
@@ -17,9 +18,10 @@ JSON Schema 只检查结构。本文的“校验规则”是语义要求，valid
 
 | 部分 | 状态 |
 | --- | --- |
-| 本文、三份 JSON Schema、示例 | 已定稿，作为实现依据 |
-| `intent validate` / `intent compile` 命令 | **未实现**。现阶段按下文“编译映射”手工转成现有 clips，并在回执中保存意图文件 |
-| 规划器按 `word_indices` 定位 | **未实现**。现阶段用 `text` + `rough_time` + 收窄的 `search_radius` 让现有唯一匹配落到选定的那一处 |
+| 本文、JSON Schema、示例 | 已定稿；`auto_cut_slicing/schema.py` 按仓库内 schema 校验，不依赖第三方包 |
+| `intent validate` / `intent compile` 命令 | 已实现（`auto_cut_slicing/intent.py`），执行 V01–V14 |
+| 规划器按 `word_indices` 定位 | 不改规划器：编译时用 `text` + `rough_time` + 收窄的 `search_radius` 让现有唯一匹配落到选定的那一处，再由 V14 核对 |
+| `audio_point` / `gap_choice` 时间来源 | **未实现**：没有 audio-gap 证据工具，校验时会以 `INTENT_EVIDENCE_MISSING` 拒绝 |
 | VM/PMO 协议携带意图 | **未实现**，设计见 [v3 草案](vm-pmo-offline-contract-v3.md) |
 
 不得把“未实现”的命令写成已执行，也不得声称 validator 已经校验过某个意图文件。

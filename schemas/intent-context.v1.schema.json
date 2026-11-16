@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "auto-cut-slicing/schemas/intent-context.v1.schema.json",
+  "title": "Auto-Cut Slicing intent context v1",
+  "description": "一次 AI 剪辑任务的本地上下文：源文件、词级转写、原意见与证据目录。证据、意图校验/编译和 QA 命令都读取它。路径相对本文件目录。见 docs/intent-schema.md。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "timeline_basis", "sources", "instructions", "evidence_dir"],
+  "properties": {
+    "schema": {"const": "auto-cut-slicing/intent-context"},
+    "schema_version": {"const": 1},
+    "timeline_basis": {"enum": ["local_source", "vm_original", "previous_review_video"]},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "path", "asr"],
+        "properties": {
+          "source_id": {"$ref": "#/$defs/id"},
+          "path": {"type": "string", "minLength": 1},
+          "asr": {"type": ["string", "null"], "minLength": 1}
+        }
+      }
+    },
+    "instructions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["instruction_id", "raw_text"],
+        "properties": {
+          "instruction_id": {"$ref": "#/$defs/id"},
+          "raw_text": {"type": "string", "minLength": 1},
+          "must_keep": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "evidence_dir": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"}
+  }
+}
