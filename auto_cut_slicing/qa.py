@@ -175,10 +175,16 @@ def _pause_picture_checks(rows, context, output, video, frame_us, duration_us, f
             # the frames go to a person instead of a pass or a fail.
             names = []
             if frame_dir is not None:
-                for t in range(moving, first + frame_us, 200_000):
-                    image = frame_dir / f"t{join + t - segment['source_start_us']}us_cut-in.png"
-                    _export_frame(video, join + t - segment["source_start_us"], 0, image)
+                # The hidden frames exist only in the source: in the output they are the held frame.
+                # Export them up to the resume point, then the output's first played frame.
+                step = max(frame_us, (played - moving) // 12 // frame_us * frame_us)
+                for t in range(moving, played, step):
+                    image = frame_dir / f"src{t}us_hidden.png"
+                    _export_frame(Path(source["path"]), t, 0, image)
                     names.append(image.name)
+                image = frame_dir / f"t{freeze_end}us_cut-in.png"
+                _export_frame(video, freeze_end, 0, image)
+                names.append(image.name)
             review = (f" Playback resumes at source {played}us, after the next picture starts moving "
                       f"(source {moving}us). Confirm the skipped frames still show the previous topic and "
                       f"the cut-in is the first frame where it is covered"
