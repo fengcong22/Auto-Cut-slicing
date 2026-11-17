@@ -52,7 +52,61 @@ def parser() -> argparse.ArgumentParser:
     visual.add_argument("source", type=Path)
     visual.add_argument("--frame-time", required=True)
     visual.add_argument("--end")
+    evidence = commands.add_parser("evidence", help="生成源哈希绑定的剪辑证据（AI 规划用）")
+    kinds = evidence.add_subparsers(dest="evidence_command", required=True)
+    for name, text in (("transcript", "导出时间窗内的词、句和停顿"),
+                       ("find-phrase", "列出短语的全部完整词元匹配"),
+                       ("frames", "导出真实解码帧图片"),
+                       ("audio-gap", "测量词尾衰减和下一词起音，给出可切窗口")):
+        sub = kinds.add_parser(name, help=text)
+        sub.add_argument("--context", required=True, type=Path)
+        sub.add_argument("--source", required=True)
+        sub.add_argument("--id", required=True)
+    kinds.choices["transcript"].add_argument("--start", required=True)
+    kinds.choices["transcript"].add_argument("--end", required=True)
+    kinds.choices["find-phrase"].add_argument("--text", required=True)
+    kinds.choices["find-phrase"].add_argument("--scope-start")
+    kinds.choices["find-phrase"].add_argument("--scope-end")
+    kinds.choices["find-phrase"].add_argument("--anchor")
+    kinds.choices["frames"].add_argument("--at", required=True, action="append")
+    kinds.choices["frames"].add_argument("--neighbors", type=int, default=0)
+    gap = kinds.choices["audio-gap"].add_mutually_exclusive_group(required=True)
+    gap.add_argument("--after-word", type=int)
+    gap.add_argument("--at")
+    intent = commands.add_parser("intent", help="校验或编译 AI 剪辑意图")
+    actions = intent.add_subparsers(dest="intent_command", required=True)
+    for name in ("validate", "compile"):
+        sub = actions.add_parser(name)
+        sub.add_argument("intent", type=Path)
+        sub.add_argument("--context", required=True, type=Path)
+    actions.choices["compile"].add_argument("--job", required=True, type=Path)
+    actions.choices["compile"].add_argument("--receipt", required=True, type=Path)
+    actions.choices["compile"].add_argument("--plan", type=Path)
+    qa = commands.add_parser("qa", help="检查成片是否落实剪辑意图（不代表最终验收）")
+    qa.add_argument("--context", required=True, type=Path)
+    qa.add_argument("--intent", required=True, type=Path)
+    qa.add_argument("--plan", required=True, type=Path)
+    qa.add_argument("--output-id", required=True)
+    qa.add_argument("--video", required=True, type=Path)
+    qa.add_argument("--video-asr", type=Path)
+    qa.add_argument("--report", required=True, type=Path)
     return root
+
+
+def _cli_us(value):
+    from .alignment import parse_time_us
+
+    if value is None:
+        return None
+    try:
+        value = float(value) if ":" not in value else value
+    except ValueError:
+        pass
+    if isinstance(value, float):
+        from decimal import Decimal
+
+        value = Decimal(str(value))
+    return parse_time_us(value, field="command-line time")
 
 
 def dispatch(args) -> dict:
@@ -75,6 +129,41 @@ def dispatch(args) -> dict:
         return {"ok": True, **analyze_freeze(
             args.source, seconds(args.frame_time), end=seconds(args.end) if args.end else None
         )}
+    if args.command == "evidence":
+        from . import evidence
+        from .context import EditContext
+
+        context = EditContext(args.context)
+        if args.evidence_command == "transcript":
+            return evidence.transcript_window(
+                context, args.source, args.id, _cli_us(args.start), _cli_us(args.end))
+        if args.evidence_command == "find-phrase":
+            return evidence.find_phrase(
+                context, args.source, args.id, args.text,
+                scope_start_us=_cli_us(args.scope_start) or 0,
+                scope_end_us=_cli_us(args.scope_end), anchor_us=_cli_us(args.anchor))
+        if args.evidence_command == "audio-gap":
+            return evidence.audio_gap(context, args.source, args.id,
+                                      after_word=args.after_word, at_us=_cli_us(args.at))
+        return evidence.frames(
+            context, args.source, args.id, [_cli_us(v) for v in args.at], neighbors=args.neighbors)
+    if args.command == "intent":
+        from .context import EditContext
+        from .intent import IntentError, compile_intent, validate
+
+        context = EditContext(args.context)
+        if args.intent_command == "validate":
+            return validate(args.intent, context)
+        try:
+            return compile_intent(args.intent, context, args.job, args.receipt, args.plan)
+        except IntentError as error:
+            return {"ok": False, "problems": error.problems}
+    if args.command == "qa":
+        from .context import EditContext
+        from .qa import run_qa
+
+        return run_qa(EditContext(args.context), args.intent, args.plan, args.output_id,
+                      args.video, args.video_asr, args.report)
     if args.command == "configure":
         from .upstream import load_config, validate_upstream
 
@@ -184,7 +273,7 @@ def dispatch(args) -> dict:
 def main(argv=None) -> int:
     arguments = list(argv) if argv is not None else sys.argv[1:]
     batch_command = arguments[:1] == ["run"]
-    if batch_command and hasattr(sys.stdout, 'reconfigure'):
+    if arguments[:1] in (["run"], ["evidence"], ["intent"], ["qa"]) and hasattr(sys.stdout, 'reconfigure'):
         # Taskboard consumes UTF-8 JSON even when the Windows host defaults to a code page.
         sys.stdout.reconfigure(encoding='utf-8')
     try:

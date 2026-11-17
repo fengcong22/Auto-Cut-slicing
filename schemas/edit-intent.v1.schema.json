@@ -1,0 +1,394 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "auto-cut-slicing/schemas/edit-intent.v1.schema.json",
+  "title": "Auto-Cut Slicing edit intent v1",
+  "description": "AI 或人工编写的剪辑意图计划。只表达选择；所有时间都必须引用可复核的来源，由包重新计算并校验。语义规则见 docs/intent-schema.md。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "status", "author", "bindings", "instructions", "coverage", "outputs", "blockers"],
+  "properties": {
+    "schema": {"const": "auto-cut-slicing/edit-intent"},
+    "schema_version": {"const": 1},
+    "status": {"enum": ["proposed", "blocked"]},
+    "author": {"$ref": "#/$defs/author"},
+    "bindings": {"$ref": "#/$defs/bindings"},
+    "instructions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/instruction"}},
+    "coverage": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/coverage"}},
+    "outputs": {"type": "array", "items": {"$ref": "#/$defs/output"}},
+    "blockers": {"type": "array", "items": {"$ref": "#/$defs/blocker"}},
+    "notes": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "proposed"}}, "required": ["status"]},
+      "then": {"properties": {"blockers": {"maxItems": 0}, "outputs": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "blocked"}}, "required": ["status"]},
+      "then": {"properties": {"blockers": {"minItems": 1}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "us": {"type": "integer", "minimum": 0},
+    "text": {"type": "string", "minLength": 1},
+    "span": {
+      "description": "原意见 raw_text 中的 Unicode 码点半开区间 [start,end)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instruction_id", "start", "end"],
+      "properties": {
+        "instruction_id": {"$ref": "#/$defs/id"},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 1}
+      }
+    },
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "agent", "model", "session_id"],
+      "properties": {
+        "kind": {"enum": ["ai", "human"]},
+        "agent": {"$ref": "#/$defs/text"},
+        "model": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]}
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeline_basis", "sources", "evidence_manifest_sha256"],
+      "properties": {
+        "timeline_basis": {"enum": ["local_source", "vm_original", "previous_review_video"]},
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_id", "sha256", "duration_us", "alignment_sha256"],
+            "properties": {
+              "source_id": {"$ref": "#/$defs/id"},
+              "sha256": {"$ref": "#/$defs/sha256"},
+              "duration_us": {"type": "integer", "minimum": 1},
+              "alignment_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+            }
+          }
+        },
+        "evidence_manifest_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+      }
+    },
+    "instruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instruction_id", "raw_text", "raw_text_sha256"],
+      "properties": {
+        "instruction_id": {"$ref": "#/$defs/id"},
+        "raw_text": {"$ref": "#/$defs/text"},
+        "raw_text_sha256": {"$ref": "#/$defs/sha256"},
+        "supplied_must_keep": {"type": "array", "items": {"$ref": "#/$defs/text"}}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["span", "quote", "disposition", "intent_ids", "reason"],
+      "properties": {
+        "span": {"$ref": "#/$defs/span"},
+        "quote": {"$ref": "#/$defs/text"},
+        "disposition": {"enum": ["operation", "constraint", "context", "unsupported", "needs_evidence", "ambiguous"]},
+        "intent_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "reason": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"disposition": {"const": "operation"}}},
+          "then": {"properties": {"intent_ids": {"minItems": 1}}}
+        }
+      ]
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_id", "clips"],
+      "properties": {
+        "output_id": {"$ref": "#/$defs/id"},
+        "name": {"$ref": "#/$defs/text"},
+        "clips": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/clip"}}
+      }
+    },
+    "clip": {
+      "description": "一个保留片段；clips 的顺序就是拼接顺序。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent_id", "source_id", "covers", "start", "end", "operations", "must_keep", "rationale"],
+      "properties": {
+        "intent_id": {"$ref": "#/$defs/id"},
+        "source_id": {"$ref": "#/$defs/id"},
+        "covers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/span"}},
+        "start": {
+          "oneOf": [
+            {
+              "type": "object", "additionalProperties": false, "required": ["mode", "at"],
+              "properties": {"mode": {"const": "time"}, "at": {"$ref": "#/$defs/time_ref"}}
+            },
+            {
+              "type": "object", "additionalProperties": false, "required": ["mode", "at"],
+              "properties": {"mode": {"const": "sentence"}, "at": {"$ref": "#/$defs/time_ref"}}
+            },
+            {
+              "type": "object", "additionalProperties": false, "required": ["mode", "phrase"],
+              "properties": {
+                "mode": {"const": "cue"},
+                "phrase": {"$ref": "#/$defs/word_span"},
+                "visual_anchor": {"$ref": "#/$defs/frame_ref"}
+              }
+            }
+          ]
+        },
+        "end": {
+          "oneOf": [
+            {
+              "type": "object", "additionalProperties": false, "required": ["mode", "at"],
+              "properties": {"mode": {"const": "time"}, "at": {"$ref": "#/$defs/time_ref"}}
+            },
+            {
+              "type": "object", "additionalProperties": false, "required": ["mode", "at"],
+              "properties": {"mode": {"const": "sentence"}, "at": {"$ref": "#/$defs/time_ref"}}
+            }
+          ]
+        },
+        "operations": {"type": "array", "items": {"$ref": "#/$defs/operation"}},
+        "must_keep": {"type": "array", "items": {"$ref": "#/$defs/must_keep"}},
+        "rationale": {"type": "string"}
+      }
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["intent_id", "kind", "covers", "phrase", "rationale"],
+          "properties": {
+            "intent_id": {"$ref": "#/$defs/id"},
+            "kind": {"enum": ["delete_phrase", "mute_phrase"]},
+            "covers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/span"}},
+            "phrase": {"$ref": "#/$defs/word_span"},
+            "rationale": {"type": "string"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["intent_id", "kind", "covers", "start", "end", "rationale"],
+          "properties": {
+            "intent_id": {"$ref": "#/$defs/id"},
+            "kind": {"const": "delete_range"},
+            "covers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/span"}},
+            "start": {"$ref": "#/$defs/time_ref"},
+            "end": {"$ref": "#/$defs/time_ref"},
+            "rationale": {"type": "string"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["intent_id", "kind", "covers", "purpose", "start", "end", "frame", "visual_review", "rationale"],
+          "properties": {
+            "intent_id": {"$ref": "#/$defs/id"},
+            "kind": {"const": "freeze_cover"},
+            "covers": {"type": "array", "items": {"$ref": "#/$defs/span"}},
+            "standard_rule": {
+              "description": "covers 为空时必填：此操作来自项目剪辑准则而不是意见文字。目前只允许清理切入残留。",
+              "const": "clean_cut_in"
+            },
+            "purpose": {"enum": ["clean_cut_in", "semantic_pause"]},
+            "start": {"$ref": "#/$defs/time_ref"},
+            "end": {"$ref": "#/$defs/time_ref"},
+            "frame": {"$ref": "#/$defs/frame_ref"},
+            "visual_review": {
+              "type": "object", "additionalProperties": false,
+              "required": ["status", "evidence_ids", "observation"],
+              "properties": {
+                "status": {"enum": ["ai_reviewed", "needs_human"]},
+                "evidence_ids": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/id"}},
+                "observation": {"$ref": "#/$defs/text"}
+              }
+            },
+            "rationale": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "word_span": {
+      "description": "ASR 词序号闭区间 [first_index,last_index]；text 须等于这些词的规范化拼接。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "alignment_sha256", "first_index", "last_index", "text", "selection"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/id"},
+        "alignment_sha256": {"$ref": "#/$defs/sha256"},
+        "first_index": {"type": "integer", "minimum": 0},
+        "last_index": {"type": "integer", "minimum": 0},
+        "text": {"$ref": "#/$defs/text"},
+        "selection": {"$ref": "#/$defs/selection"}
+      }
+    },
+    "selection": {
+      "description": "从候选中选定这一处的依据。没有用户依据时只能是 unique_in_scope。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "scope_start_us", "scope_end_us", "candidates", "evidence_id"],
+      "properties": {
+        "method": {"enum": ["unique_in_scope", "user_anchor", "user_ordinal", "user_context"]},
+        "scope_start_us": {"$ref": "#/$defs/us"},
+        "scope_end_us": {"$ref": "#/$defs/us"},
+        "candidates": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["first_index", "last_index", "start_us", "end_us"],
+            "properties": {
+              "first_index": {"type": "integer", "minimum": 0},
+              "last_index": {"type": "integer", "minimum": 0},
+              "start_us": {"$ref": "#/$defs/us"},
+              "end_us": {"$ref": "#/$defs/us"}
+            }
+          }
+        },
+        "evidence_id": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+        "anchor": {"$ref": "#/$defs/user_anchor_ref"},
+        "radius_us": {"type": "integer", "minimum": 1},
+        "ordinal": {"type": "integer", "minimum": 1},
+        "ordinal_from_end": {"type": "boolean"},
+        "ordinal_span": {"$ref": "#/$defs/span"},
+        "context_span": {"$ref": "#/$defs/span"},
+        "context_text": {"$ref": "#/$defs/text"}
+      },
+      "allOf": [
+        {"if": {"properties": {"method": {"const": "user_anchor"}}}, "then": {"required": ["anchor", "radius_us"]}},
+        {"if": {"properties": {"method": {"const": "user_ordinal"}}}, "then": {"required": ["ordinal", "ordinal_span"]}},
+        {"if": {"properties": {"method": {"const": "user_context"}}}, "then": {"required": ["context_span", "context_text"]}}
+      ]
+    },
+    "time_ref": {
+      "oneOf": [
+        {"$ref": "#/$defs/user_anchor_ref"},
+        {"$ref": "#/$defs/word_edge_ref"},
+        {"$ref": "#/$defs/frame_ref"},
+        {"$ref": "#/$defs/source_edge_ref"},
+        {"$ref": "#/$defs/audio_point_ref"},
+        {"$ref": "#/$defs/gap_choice_ref"}
+      ]
+    },
+    "user_anchor_ref": {
+      "description": "用户在原意见中写出的时间；包重新解析 span 中的文字，必须得到 value_us。",
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "value_us", "span"],
+      "properties": {
+        "ref": {"const": "user_anchor"},
+        "value_us": {"$ref": "#/$defs/us"},
+        "span": {"$ref": "#/$defs/span"}
+      }
+    },
+    "word_edge_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "value_us", "source_id", "alignment_sha256", "index", "edge", "text"],
+      "properties": {
+        "ref": {"const": "word_edge"},
+        "value_us": {"$ref": "#/$defs/us"},
+        "source_id": {"$ref": "#/$defs/id"},
+        "alignment_sha256": {"$ref": "#/$defs/sha256"},
+        "index": {"type": "integer", "minimum": 0},
+        "edge": {"enum": ["start", "end"]},
+        "text": {"$ref": "#/$defs/text"},
+        "claim": {"enum": ["sentence_start", "sentence_end"]}
+      }
+    },
+    "frame_ref": {
+      "description": "真实解码帧的源时间戳，必须出现在 evidence_id 指向的帧证据中。",
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "value_us", "source_id", "source_sha256", "evidence_id"],
+      "properties": {
+        "ref": {"const": "frame"},
+        "value_us": {"$ref": "#/$defs/us"},
+        "source_id": {"$ref": "#/$defs/id"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "evidence_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "source_edge_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "value_us", "source_id", "edge"],
+      "properties": {
+        "ref": {"const": "source_edge"},
+        "value_us": {"$ref": "#/$defs/us"},
+        "source_id": {"$ref": "#/$defs/id"},
+        "edge": {"enum": ["start", "end"]}
+      }
+    },
+    "audio_point_ref": {
+      "description": "audio-gap 证据中测得的点。",
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "value_us", "evidence_id", "point"],
+      "properties": {
+        "ref": {"const": "audio_point"},
+        "value_us": {"$ref": "#/$defs/us"},
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "point": {"enum": ["decay_end", "low_energy_start", "low_energy_end", "next_word_start"]}
+      }
+    },
+    "gap_choice_ref": {
+      "description": "在已测得的无下一词区间 [lower_us,upper_us] 内选定的点，用于语义停顿；不能越出区间。",
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "value_us", "evidence_id", "lower_us", "upper_us", "basis", "rationale"],
+      "properties": {
+        "ref": {"const": "gap_choice"},
+        "value_us": {"$ref": "#/$defs/us"},
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "lower_us": {"$ref": "#/$defs/us"},
+        "upper_us": {"$ref": "#/$defs/us"},
+        "basis": {"enum": ["user_duration", "ai_pacing"]},
+        "duration_span": {"$ref": "#/$defs/span"},
+        "rationale": {"$ref": "#/$defs/text"}
+      },
+      "allOf": [
+        {"if": {"properties": {"basis": {"const": "user_duration"}}}, "then": {"required": ["duration_span"]}}
+      ]
+    },
+    "must_keep": {
+      "type": "object", "additionalProperties": false,
+      "required": ["text", "origin"],
+      "properties": {
+        "text": {"$ref": "#/$defs/text"},
+        "origin": {
+          "oneOf": [
+            {
+              "type": "object", "additionalProperties": false, "required": ["kind", "span"],
+              "properties": {"kind": {"const": "instruction_span"}, "span": {"$ref": "#/$defs/span"}}
+            },
+            {
+              "type": "object", "additionalProperties": false, "required": ["kind", "instruction_id"],
+              "properties": {"kind": {"const": "supplied_must_keep"}, "instruction_id": {"$ref": "#/$defs/id"}}
+            }
+          ]
+        }
+      }
+    },
+    "blocker": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "message", "spans", "missing_evidence"],
+      "properties": {
+        "code": {
+          "enum": [
+            "INTENT_UNCOVERED_TEXT", "INTENT_AMBIGUOUS_MATCH", "INTENT_NO_MATCH",
+            "INTENT_TIME_UNSOURCED", "INTENT_EVIDENCE_MISSING", "INTENT_EVIDENCE_STALE",
+            "INTENT_UNSUPPORTED_OPERATION", "INTENT_CONFLICT", "INTENT_NEEDS_USER_DECISION"
+          ]
+        },
+        "message": {"$ref": "#/$defs/text"},
+        "spans": {"type": "array", "items": {"$ref": "#/$defs/span"}},
+        "missing_evidence": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+        "candidates": {"type": "array", "items": {"type": "object"}}
+      }
+    }
+  }
+}

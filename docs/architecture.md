@@ -42,3 +42,9 @@ Auto-Cut Lite 的 `review-document-run`、`split_gap` 和时长保留语义不�
 
 未来可以增加接缝试听队列、全候选反向 ASR、字幕裁切重排和多平台竖版布局；这些在实现和实测之前
 不属于当前正式能力。源文件哈希绑定的输入 ASR 与完整输出音频反向 ASR 是两种独立证据。
+
+## AI 规划层（设计中）
+
+AI 读取意见和证据后写出 [意图计划](intent-schema.md)，经校验和编译变成上图中的“切片任务”，
+之后仍由同一规划器、渲染器和草稿 worker 执行。AI 不产生时间数值，也不直接生成交付文件。
+本包不调用大模型；AI 会话由 Codex 聊天或 Taskboard 启动。流程见 [AI 参与剪辑工作流](ai-editing-workflow.md)。

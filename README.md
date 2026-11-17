@@ -15,6 +15,13 @@
 技能的版本化源文件为 `skills/auto-cut-slicing/SKILL.md`；修改后运行
 `python scripts/install_repo_skills.py` 刷新本仓库 `.codex/skills/` 中的安装副本。
 
+## AI 参与剪辑
+
+由 AI 理解自然语言意见、按证据写意图计划、执行并检查意见是否落实的流程见
+[AI 参与剪辑工作流](docs/ai-editing-workflow.md)，意图格式见 [意图计划](docs/intent-schema.md) 和
+[schemas/](schemas/)。已提供 `evidence`（转写窗口、短语候选、解码帧、停顿测量）、`intent validate|compile` 和 `qa` 命令；
+QA 画面复核文件和 [VM / PMO v3](docs/vm-pmo-offline-contract-v3.md) 尚未实现。
+
 ## 本机开发
 
 Python 3.10–3.12，FFmpeg / FFprobe 在 PATH 中可用。
@@ -49,7 +56,7 @@ MP4 开始的审核轮次，并接入源哈希绑定的删词/语音 cue 规划�
 协议见 [VM / PMO v1](docs/vm-pmo-offline-contract-v1.md) 和
 [VM / PMO v2](docs/vm-pmo-offline-contract-v2.md)。Taskboard v2 已接入初稿审批下载、审核 parent/轮次、
 MP4 校验、附件追加读回和阶段写回；离线合成素材验证覆盖多轮审核和语义证据阻断。真实测试表的审批、
-附件更新及最终归档仍须单独验收。Taskboard 项目见
+附件更新及最终归档仍须单独验收，步骤见 [真实验收清单](docs/real-acceptance-checklist.md)。Taskboard 项目见
 [feishu-codex-Taskboard](https://github.com/fengcong22/feishu-codex-Taskboard)。
 
 ```powershell

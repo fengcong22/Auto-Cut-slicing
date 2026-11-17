@@ -1,6 +1,6 @@
 ---
 name: auto-cut-slicing
-description: 视频切片独立工作流：选取多条短片、有序拼接、句边界补全、按词级 ASR 删词或静音、按源时间删段落、静帧替换。默认输出可编辑剪映草稿；明确要求成片或 Taskboard 接入时批量生成 MP4。适用于本仓库 auto-cut-slicing，真实删除会压缩时间轴。
+description: 视频切片独立工作流：选取多条短片、有序拼接、句边界补全、按词级 ASR 删词或静音、按源时间删段落、静帧替换。默认输出可编辑剪映草稿；明确要求成片或 Taskboard 接入时批量生成 MP4。适用于本仓库 auto-cut-slicing，真实删除会压缩时间轴。也用于由 AI 理解自然语言剪辑意见、按证据写意图计划并检查意见是否落实。
 ---
 
 # Auto-Cut Slicing
@@ -62,3 +62,16 @@ PMO 批次按记录生成输出，不按 VMID 去重；展示名取“成片命�
 报告输出路径、每条输出时长、哈希/解码结果、修改及失败回执；句策略检查 `boundary_adjustments`，
 草稿还报告修改标签轨。`source_text` 保留原始码点，诊断字段单独记录。
 ASR 句末标点是句边界候选证据；仅结构验收不能声称已试听、语义完整、剪映实际打开或完成全候选反向 ASR。
+
+## AI 理解与规划意见
+
+意见不符合固定句式、包含多项要求或需要判断位置时，按 `docs/ai-editing-workflow.md` 执行，
+意图格式见 `docs/intent-schema.md` 与 `schemas/edit-intent.v1.schema.json`。要点：
+意见逐段写覆盖表，每段注明执行、约束、说明或做不到；所有时间只引用用户写出的时间、ASR 词界、
+真实解码帧、源首尾或音频测量，不写没有来源的数字。短语出现多次时，只按唯一、用户时间、
+用户序数或用户上下文选择，否则阻断并列出候选。不确定、缺证据或不支持时明确报告，不用近似操作代替。
+已实现 `evidence transcript|find-phrase|frames|audio-gap`、`intent validate|compile` 和 `qa`，都读取一份 intent-context；
+出点用 audio-gap 实测窗口内的 `gap_choice`，不要停在最后一个词的 ASR 终点；每个切口约 1 秒无语音（只用自然停顿）。
+接缝停顿期间保持前一段最后一帧（`semantic_pause` 定格），到后段声音开始才切后段画面，QA 的 `seam_pause_picture` 会检查。
+QA 画面复核文件和 VM/PMO v3 尚未实现，见工作流“能力状态”表，不得写成已执行。
+`qa` 的 `ready_for_review` 不是验收；质量检查分开记录自动检查、AI 复核和人工试听。
