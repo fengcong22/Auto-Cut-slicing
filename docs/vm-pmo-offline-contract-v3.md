@@ -104,7 +104,7 @@ stdout 仍是单行 JSON。`ready` / `rendered` / `blocked` / `checked` 退出�
 
 **Context v3**：在 v2 字段之外，必填 `evidence_dir`、`intent_context_path`、`intent_path`、`analyze_result_path`、
 `qa_path`、`qa_review_path`。全部在 `run_dir` 内、互不相同；JSON 路径不得位于 `evidence_dir` 内，
-也不得占用固定文件 `alignment.words.json`、`output.words.json`、`.plan.lock`。
+也不得占用固定文件 `alignment.words.json`、`output.words.json`、`qa-result.json`、`.plan.lock`。
 
 **analyze**（仅 `ai_intent`）：
 - 校验源，调用 ASR 写 `alignment.words.json`（已存在则复用、只复核）。
@@ -136,8 +136,11 @@ ready 时 `blockers` 为空；blocked 时 `coverage` 为 null，`blockers` 为�
 回执的 `intent_sha256`、`coverage` 为 null。
 
 **qa**（仅 `ai_intent`）：要求 `result.json` 为 `rendered`，且计划、MP4 哈希与之一致；重算计划后调用内容 QA，
-写 `qa_path` 和同目录的 `qa-frames/`。`--reverse-asr` 时先对成片调用 ASR 写 `output.words.json`（会产生费用），默认关闭。
-stdout：`status: checked`、`qa_sha256`、`overall`、`counts`、`reverse_asr`。`checked` 只表示检查已运行，
+写 `qa_path` 和同目录的 `qa-frames/`。`qa.json` 的 `bindings.plan_sha256` 绑定本轮 `plan.json` 的字节
+（QA 内部使用的引擎计划由它重算，哈希为 `plan.json` 中的 `engine_plan_sha256`）。`--reverse-asr` 时先对成片调用 ASR 写 `output.words.json`（会产生费用），默认关闭。
+结果同时写入固定文件 `<run_dir>\qa-result.json`（stdout 内容相同）：`status`（`checked` / `blocked` / `failed`）、
+`plan_sha256`、`qa_sha256`、`overall`、`counts`、`reverse_asr`、`error`。回执只写一次，阻断也不例外；
+重复调用直接返回已有回执，不重新检查。`checked` 只表示检查已运行，
 `overall` 才是结果；`needs_human` 项仍须人工复核。
 
 **测试边界**：`tests/test_vm_pmo_v3.py` 用合成媒体、合成 ASR 和手写意图代替真实 ASR 与 AI 步骤，

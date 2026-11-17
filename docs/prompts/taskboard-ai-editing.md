@@ -6,15 +6,16 @@
 ## Taskboard 自动调度（包侧 v3 已实现；Taskboard 接入后使用）
 
 ```text
-你在 auto-cut-slicing 仓库中执行一次 VM/PMO 剪辑规划。
+你在为 auto-cut-slicing 执行一次 VM/PMO 剪辑规划。
 
-运行目录：<run_dir>
+包仓库：<package_root>（只读；下面提到的文档都在这里）
+运行目录：<run_dir>（你的工作目录，唯一可写的位置）
 输入：<run_dir>\input.json
 上下文：<run_dir>\execution-context.json
 意图上下文：<run_dir>\intent-context.json（证据命令的 --context 用它）
 证据清单：<run_dir>\evidence\manifest.json（已由 analyze 生成，含完整转写 transcript-full）
 
-先阅读：
+先阅读（路径相对包仓库）：
 1. AGENTS.md
 2. docs/editing-standards.md
 3. docs/ai-editing-workflow.md
@@ -23,6 +24,10 @@
 任务：按 docs/ai-editing-workflow.md 第 1–4 步，为 input.json 中的全部 instructions 写出
 <run_dir>\edit-intent.json。需要更多证据时只使用工作流“能力状态”表中列出的命令。
 
+运行证据命令：包没有安装到 Python 环境，`python -m auto_cut_slicing ...` 必须在包仓库目录下执行
+（先 `Set-Location <package_root>`，再执行命令），
+`--context` 写意图上下文的绝对路径 <run_dir>\intent-context.json。证据文件会写进 <run_dir>\evidence\。
+
 边界：
 - 只在运行目录内写文件，不修改仓库文件，不运行 render，不上传或回写任何系统。
 - 这是无人值守运行，不能向用户提问。需要用户决定、证据不足或能力不支持时，
@@ -30,6 +35,8 @@
 - 时间只能引用 docs/intent-schema.md“时间来源”中的来源。
 - 结束时输出一段简短报告：每条意见的处理方式、阻断原因、仍需人工复核的项目。
 ```
+
+启动方须把 `<package_root>` 和 `<run_dir>` 都替换成绝对路径。
 
 QA 复核阶段（第 6 步）使用同样的开头，把“任务”改为：
 

@@ -224,7 +224,10 @@ def test_ai_intent_plans_renders_and_runs_qa(v3):
     statuses = {row["kind"]: row["status"] for row in report["checks"]}
     assert statuses["coverage_complete"] == statuses["operation_compiled"] == "passed"
     assert statuses["unlisted_change"] == statuses["duration_match"] == "passed"
-    assert vm_pmo.qa_command(v3["input_path"], v3["context_path"])["error"]["code"] == "OUTPUT_EXISTS"
+    assert report["bindings"]["plan_sha256"] == file_sha256(v3["context"]["plan_path"])
+    assert report["bindings"]["output_sha256"] == rendered["artifacts"][0]["sha256"]
+    assert read_json(v3["run_dir"] / "qa-result.json") == checked
+    assert vm_pmo.qa_command(v3["input_path"], v3["context_path"]) == checked
 
 
 def test_plan_requires_analysis_then_intent(v3):
@@ -312,6 +315,8 @@ def test_qa_requires_rendered_output(v3):
     checked = vm_pmo.qa_command(v3["input_path"], v3["context_path"])
     assert (checked["status"], checked["error"]["code"]) == ("blocked", "RENDER_REQUIRED")
     assert not Path(v3["context"]["qa_path"]).exists()
+    assert read_json(v3["run_dir"] / "qa-result.json") == checked
+    assert vm_pmo.qa_command(v3["input_path"], v3["context_path"]) == checked
 
 
 def test_rule_mode_matches_v2_range_planning_without_analysis(v3):
@@ -330,7 +335,8 @@ def test_rule_mode_matches_v2_range_planning_without_analysis(v3):
 
 
 @pytest.mark.parametrize("change", ["no_session", "manual_with_ai", "bad_mode", "session_in_rule",
-                                    "context_v2_paths", "intent_outside_run", "bad_prior_round"])
+                                    "context_v2_paths", "intent_outside_run", "bad_prior_round",
+                                    "qa_reuses_fixed_receipt"])
 def test_v3_rejects_invalid_requests(v3, change):
     value = copy.deepcopy(v3["input"])
     context = v3["context"]
@@ -346,6 +352,8 @@ def test_v3_rejects_invalid_requests(v3, change):
     elif change == "context_v2_paths":
         for key in vm_pmo.V3_CONTEXT_PATHS:
             del context[key]
+    elif change == "qa_reuses_fixed_receipt":
+        context["qa_path"] = str(v3["run_dir"] / "qa-result.json")
     elif change == "intent_outside_run":
         context["intent_path"] = str(v3["run_dir"].parent / "edit-intent.json")
     elif change == "bad_prior_round":
@@ -357,7 +365,7 @@ def test_v3_rejects_invalid_requests(v3, change):
          "--input", str(v3["input_path"]), "--context", str(v3["context_path"])],
         capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
     result = json.loads(outcome.stdout)
-    if change in ("context_v2_paths", "intent_outside_run"):
+    if change in ("context_v2_paths", "intent_outside_run", "qa_reuses_fixed_receipt"):
         # Untrusted context never yields a receipt path; the run fails before planning.
         assert outcome.returncode == 1 and result["status"] == "failed"
         assert result["error"]["code"] in ("INVALID_CONTEXT", "INVALID_INPUT")

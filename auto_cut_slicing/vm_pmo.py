@@ -361,7 +361,7 @@ def _validate_context(context, input_path, context_path):
             raise VmError('INVALID_CONTEXT', f'{key} must be inside run_dir')
     if version == 3:
         fixed = {run_dir / 'alignment.words.json', run_dir / 'output.words.json',
-                 run_dir / '.plan.lock'}
+                 run_dir / 'qa-result.json', run_dir / '.plan.lock'}
         if fixed & set(paths.values()):
             raise VmError('INVALID_CONTEXT', 'Context paths must not reuse fixed run files')
         for key in ('intent_context_path', 'intent_path', 'analyze_result_path', 'qa_path',
@@ -1015,10 +1015,28 @@ def analyze_command(input_path, context_path):
 
 
 def qa_command(input_path, context_path, *, reverse_asr=False):
-    """Run content QA on the rendered MP4 against the validated intent; writes qa.json only."""
+    """Run content QA on the rendered MP4 and publish its outcome as ``qa-result.json``.
+
+    The receipt is written once for checked, blocked and failed outcomes alike; a repeated
+    call returns the saved receipt instead of running QA again.
+    """
+    input_data, context, paths, base = _v3_request(input_path, context_path)
+    receipt_path = paths['run_dir'] / 'qa-result.json'
+    with _plan_lock(paths['run_dir']):
+        if receipt_path.exists():
+            _regular_file(receipt_path, 'PLAN_CHANGED')
+            saved = read_json(receipt_path)
+            if not isinstance(saved, dict) or {key: saved.get(key) for key in base} != base:
+                raise VmError('OUTPUT_EXISTS', 'Existing QA result belongs to a different request')
+            return saved
+        result = _qa_outcome(input_data, context, paths, base, reverse_asr)
+        write_new_json(receipt_path, result)
+        return result
+
+
+def _qa_outcome(input_data, context, paths, base, reverse_asr):
     from .qa import run_qa
 
-    input_data, context, paths, base = _v3_request(input_path, context_path)
     plan_hash = None
     try:
         if paths['qa_path'].exists():
@@ -1057,7 +1075,7 @@ def qa_command(input_path, context_path, *, reverse_asr=False):
             engine_path = write_json(Path(temporary) / 'plan.json', engine)
             report = run_qa(_edit_context(paths, descriptor), paths['intent_path'], engine_path,
                             engine['outputs'][0]['id'], paths['output_path'], video_asr,
-                            paths['qa_path'])
+                            paths['qa_path'], plan_binding_path=paths['plan_path'])
         return {**base, 'status': 'checked', 'plan_sha256': plan_hash,
                 'qa_sha256': file_sha256(paths['qa_path']), 'overall': report['overall'],
                 'counts': report['counts'], 'reverse_asr': reverse_asr, 'error': None}
