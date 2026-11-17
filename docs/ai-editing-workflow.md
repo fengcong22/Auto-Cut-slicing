@@ -48,7 +48,8 @@
 | 成片反向 ASR | 手动：对成片运行 `transcribe`，再把结果传给 `qa --video-asr` |
 | 内容质量检查 | 已实现：`qa --context C --intent I --plan P --output-id O --video V --report R [--video-asr W]`，并导出接缝帧 |
 | AI 复核 QA 画面（qa-review） | **未实现**。看图后的结论写在报告之外，不能修改 `qa.json` |
-| Taskboard 自动入口携带意图 | **不支持**。v2 只接受固定句式或 `manual_revision`，见 [v3 草案](vm-pmo-offline-contract-v3.md) |
+| VM/PMO v3 包侧命令 | 已实现：`vm_pmo analyze` / `plan`（`planning_mode: ai_intent`）/ `render` / `qa`，见 [v3](vm-pmo-offline-contract-v3.md)；manifest 尚未声明 v3 |
+| Taskboard 自动入口携带意图 | **未接入**。Taskboard 还没有 v3 driver 和启动 AI 的步骤，生产仍走 v2 固定句式或 `manual_revision` |
 | AI 在 Taskboard 中看图 | **未验证**。在验证前，画面判断一律交给审批环节由人复核 |
 
 ## 步骤
@@ -85,6 +86,9 @@
 - 起点：以用户标注的时间为局部锚点，选就近的完整词或短语，通常偏移在约 1 秒内；
   偏移更大时复核内容并在 `rationale` 中写明理由。不为凑 ASR 整句带入更早的引入语。
 - 终点：落在词内或句内时补到当前句末，不带入下一句。
+- 用户写的结束时间也是局部锚点（用户 2026-11-17 确认）：落在末词词尾或其后的停顿里时，不要停在该时间，
+  按下面“出点”一条向后延到 `out_window` 内，相对用户时间最多约 1 秒，并在覆盖表 `reason` 写明。
+  需要超过约 1 秒或会带入下一词时不延长。validator 不检查这个上限，按本条自行遵守。
 - 开头或接缝残留前一主题时，用后面已确认干净的新画面 `freeze_cover`（`clean_cut_in`），覆盖到内容自然恢复，声音继续。
   意见没有提到时也要做：`covers` 留空并写 `standard_rule: "clean_cut_in"`。
   选帧时导出切入点之后的若干帧逐张查看，取第一张完全干净、且后续自然播放仍干净的帧；覆盖终点就取这一帧。

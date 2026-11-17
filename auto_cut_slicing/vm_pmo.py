@@ -24,10 +24,16 @@ PROTOCOL = 'vm_pmo_review_video'
 HASH = re.compile(r'[0-9a-f]{64}\Z')
 
 
+V3_CONTEXT_PATHS = ('evidence_dir', 'intent_context_path', 'intent_path', 'analyze_result_path',
+                    'qa_path', 'qa_review_path')
+PLANNING_MODES = ('rule', 'ai_intent')
+
+
 class VmError(SlicingError):
-    def __init__(self, code, message):
+    def __init__(self, code, message, blockers=None):
         super().__init__(message)
         self.code = code
+        self.blockers = blockers or []
 
 
 def _object(value, fields, label):
@@ -96,6 +102,31 @@ def _receipt_base(input_data, context):
     }
 
 
+def _ready_receipt(base, plan, plan_sha256):
+    receipt = {**base, 'status': 'ready', 'plan_sha256': plan_sha256,
+               'instruction_results': plan.get('instruction_results'), 'error': None}
+    if base.get('schema_version') == 3:
+        receipt.update(planning_mode=plan.get('planning_mode'),
+                       intent_sha256=plan.get('intent_sha256'),
+                       coverage=plan.get('coverage'), blockers=[])
+    return receipt
+
+
+def _blocked_receipt(base, input_data, paths, error):
+    receipt = {**base, 'status': 'blocked', 'plan_sha256': None,
+               'instruction_results': _instruction_results(input_data),
+               'error': _error(error)}
+    if base.get('schema_version') == 3:
+        intent_path = paths.get('intent_path')
+        intent_hash = None
+        if intent_path is not None and intent_path.is_file() and not intent_path.is_symlink():
+            intent_hash = file_sha256(intent_path)
+        blockers = getattr(error, 'blockers', None) or [receipt['error']]
+        receipt.update(planning_mode=input_data.get('planning_mode'), intent_sha256=intent_hash,
+                       coverage=None, blockers=blockers)
+    return receipt
+
+
 def _error(error):
     code = getattr(error, 'code', 'EXECUTION_FAILED')
     messages = {
@@ -111,6 +142,12 @@ def _error(error):
         'SOURCE_CHANGED': 'Source media differs from the bound input.',
         'OUTPUT_EXISTS': 'A planned output already exists; this run will not overwrite it.',
         'PLAN_CHANGED': 'The plan or ready receipt differs from this run.',
+        'ANALYSIS_REQUIRED': 'AI planning requires a ready analyze result for this run.',
+        'INTENT_MISSING': 'AI planning did not produce an edit intent file.',
+        'INTENT_INVALID': 'The edit intent failed validation.',
+        'INTENT_BLOCKED': 'The edit intent is blocked; see blockers.',
+        'INTENT_RULE_MISMATCH': 'The edit intent and the fixed-pattern parser compile to different edits.',
+        'RENDER_REQUIRED': 'QA requires a rendered MP4 for this run.',
         'EXECUTION_FAILED': 'The local media operation failed.',
     }
     return {'code': code, 'message': messages.get(code, messages['EXECUTION_FAILED'])}
@@ -120,15 +157,21 @@ def _validate_input(input_data):
     required = {'protocol', 'schema_version', 'package', 'binding', 'record',
                 'review_round', 'source', 'instructions', 'output_profile',
                 'delivery_target'}
+    version = input_data.get('schema_version') if isinstance(input_data, dict) else None
+    optional = {'manual_revision'}
+    if version == 3:
+        required = required | {'planning_mode'}
+        optional = optional | {'prior_rounds', 'ai_session'}
     if not isinstance(input_data, dict) or not required <= set(input_data) or (
-        set(input_data) - required - {'manual_revision'}
+        set(input_data) - required - optional
     ):
         raise VmError('INVALID_INPUT', 'Input contains missing or unsupported fields')
-    version = input_data['schema_version']
-    if input_data['protocol'] != PROTOCOL or type(version) is not int or version not in (1, 2):
+    if input_data['protocol'] != PROTOCOL or type(version) is not int or version not in (1, 2, 3):
         raise VmError('INVALID_INPUT', 'Unsupported VM/PMO protocol or schema version')
-    if 'manual_revision' in input_data and version != 2:
-        raise VmError('INVALID_INPUT', 'Manual revisions require schema v2')
+    if 'manual_revision' in input_data and version not in (2, 3):
+        raise VmError('INVALID_INPUT', 'Manual revisions require schema v2 or v3')
+    if version == 3:
+        _validate_v3_fields(input_data)
     package = _object(input_data['package'], ('alias', 'name', 'version', 'manifest_sha256'), 'package')
     _id(package['alias'], 'package.alias')
     manifest = Path(__file__).resolve().parents[1] / 'PACKAGE-MANIFEST.json'
@@ -140,8 +183,8 @@ def _validate_input(input_data):
         _id(value, f'binding.{key}')
     if version == 1 and binding['stage_id'] != 'initial':
         raise VmError('UNSUPPORTED_ROUND', 'Schema v1 supports only the initial stage')
-    if version == 2 and binding['stage_id'] not in ('initial', 'review'):
-        raise VmError('UNSUPPORTED_ROUND', 'Schema v2 supports only initial and review stages')
+    if version >= 2 and binding['stage_id'] not in ('initial', 'review'):
+        raise VmError('UNSUPPORTED_ROUND', 'Schema v2/v3 supports only initial and review stages')
     record = _object(input_data['record'], ('base_token', 'table_id', 'record_id'), 'record')
     for key, value in record.items():
         _id(value, f'record.{key}')
@@ -195,7 +238,7 @@ def _validate_input(input_data):
     for item in instructions:
         allowed_instruction_fields = ['instruction_id', 'source_field_id', 'raw_text',
                                       'timeline_basis', 'applicability']
-        if version == 2:
+        if version >= 2:
             allowed_instruction_fields.extend(['visual_evidence', 'must_keep'])
         required_instruction_fields = ['instruction_id', 'source_field_id', 'raw_text',
                                        'timeline_basis', 'applicability']
@@ -223,6 +266,33 @@ def _validate_input(input_data):
             raise VmError('INVALID_INPUT', 'must_keep must be a list of nonempty phrases')
     if 'manual_revision' in input_data:
         _manual_revision_clips(input_data)
+
+
+def _validate_v3_fields(input_data):
+    mode = input_data['planning_mode']
+    if mode not in PLANNING_MODES:
+        raise VmError('INVALID_INPUT', 'planning_mode must be rule or ai_intent')
+    if mode == 'ai_intent':
+        if 'manual_revision' in input_data:
+            raise VmError('INVALID_INPUT', 'manual_revision cannot be combined with ai_intent planning')
+        session = _object(input_data.get('ai_session'), ('agent', 'model', 'session_id'), 'ai_session')
+        for key, value in session.items():
+            _id(value, f'ai_session.{key}')
+    elif 'ai_session' in input_data:
+        raise VmError('INVALID_INPUT', 'ai_session is only used with ai_intent planning')
+    rounds = input_data.get('prior_rounds', [])
+    if not isinstance(rounds, list):
+        raise VmError('INVALID_INPUT', 'prior_rounds must be a list')
+    for row in rounds:
+        _object(row, ('round_id', 'instructions'), 'prior round')
+        _id(row['round_id'], 'prior round.round_id')
+        if not isinstance(row['instructions'], list):
+            raise VmError('INVALID_INPUT', 'prior round instructions must be a list')
+        for item in row['instructions']:
+            _object(item, ('instruction_id', 'raw_text'), 'prior round instruction')
+            _id(item['instruction_id'], 'prior round instruction_id')
+            if not isinstance(item['raw_text'], str):
+                raise VmError('INVALID_INPUT', 'prior round raw_text must be text')
 
 
 def _manual_revision_clips(input_data):
@@ -267,22 +337,39 @@ def _manual_revision_clips(input_data):
 
 
 def _validate_context(context, input_path, context_path):
-    _object(context, ('protocol', 'schema_version', 'input_sha256', 'run_dir', 'source_path',
-                      'plan_path', 'plan_result_path', 'result_path', 'output_path'), 'context')
-    if context['protocol'] != PROTOCOL or type(context['schema_version']) is not int or context['schema_version'] not in (1, 2):
+    if not isinstance(context, dict):
+        raise VmError('INVALID_CONTEXT', 'Context must be an object')
+    version = context.get('schema_version')
+    if context.get('protocol') != PROTOCOL or type(version) is not int or version not in (1, 2, 3):
         raise VmError('INVALID_CONTEXT', 'Unsupported VM/PMO context version')
+    keys = ('run_dir', 'source_path', 'plan_path', 'plan_result_path', 'result_path', 'output_path')
+    if version == 3:
+        keys = keys + V3_CONTEXT_PATHS
+    _object(context, ('protocol', 'schema_version', 'input_sha256') + keys, 'context')
     if _hash(context['input_sha256'], 'context.input_sha256') != file_sha256(input_path):
         raise VmError('INPUT_CHANGED', 'Input bytes differ from the trusted context')
-    paths = {key: _path(context[key], f'context.{key}') for key in
-             ('run_dir', 'source_path', 'plan_path', 'plan_result_path', 'result_path', 'output_path')}
+    paths = {key: _path(context[key], f'context.{key}') for key in keys}
     run_dir = paths['run_dir']
     if not run_dir.is_dir() or run_dir.is_symlink():
         raise VmError('INVALID_CONTEXT', 'run_dir must be an existing regular directory')
     if input_path != run_dir / 'input.json' or context_path != run_dir / 'execution-context.json':
         raise VmError('INVALID_CONTEXT', 'Input and context must use fixed names inside run_dir')
-    for key in ('plan_path', 'plan_result_path', 'result_path', 'output_path'):
+    for key in ('plan_path', 'plan_result_path', 'result_path', 'output_path') + (
+        V3_CONTEXT_PATHS if version == 3 else ()
+    ):
         if not paths[key].is_relative_to(run_dir) or paths[key] == run_dir:
             raise VmError('INVALID_CONTEXT', f'{key} must be inside run_dir')
+    if version == 3:
+        fixed = {run_dir / 'alignment.words.json', run_dir / 'output.words.json',
+                 run_dir / 'qa-result.json', run_dir / '.plan.lock'}
+        if fixed & set(paths.values()):
+            raise VmError('INVALID_CONTEXT', 'Context paths must not reuse fixed run files')
+        for key in ('intent_context_path', 'intent_path', 'analyze_result_path', 'qa_path',
+                    'qa_review_path'):
+            if paths[key].suffix.lower() != '.json':
+                raise VmError('INVALID_CONTEXT', f'{key} must end in .json')
+            if paths[key].is_relative_to(paths['evidence_dir']):
+                raise VmError('INVALID_CONTEXT', f'{key} must not be inside evidence_dir')
     if len(set(paths.values())) != len(paths) or input_path in paths.values():
         raise VmError('INVALID_CONTEXT', 'Context paths must be distinct from each other and input')
     if paths['output_path'].suffix.lower() != '.mp4':
@@ -364,10 +451,12 @@ def _existing_plan(input_data, paths, base):
                 raise VmError('PLAN_CHANGED', 'Existing alignment no longer matches the source') from error
             if alignment['sha256'] != alignment_sha256:
                 raise VmError('PLAN_CHANGED', 'Validated alignment differs from the saved plan')
-        expected_receipt = {
-            **base, 'status': 'ready', 'plan_sha256': file_sha256(paths['plan_path']),
-            'instruction_results': saved_plan.get('instruction_results'), 'error': None,
-        }
+        intent_sha256 = saved_plan.get('intent_sha256')
+        if intent_sha256 is not None:
+            _regular_file(paths['intent_path'], 'PLAN_CHANGED')
+            if file_sha256(paths['intent_path']) != intent_sha256:
+                raise VmError('PLAN_CHANGED', 'Existing edit intent differs from the saved plan')
+        expected_receipt = _ready_receipt(base, saved_plan, file_sha256(paths['plan_path']))
         if receipt != expected_receipt:
             raise VmError('PLAN_CHANGED', 'Existing ready receipt does not match its plan')
     elif receipt.get('status') == 'blocked':
@@ -495,7 +584,16 @@ def _review_engine_plan(input_data, source_path, descriptor, clips, run_dir, ali
             raise VmError(code, message) from error
 
 
-def _operation_rows(output):
+def _operation_rows(output, with_intent=False):
+    rows = _operation_rows_base(output)
+    if with_intent:
+        for row in rows:
+            clip_id, _, item = row['operation_id'].partition('/')
+            row['intent_id'] = clip_id if item == 'start_cue' else item
+    return rows
+
+
+def _operation_rows_base(output):
     rows = []
     for cue in output.get('start_cues', []):
         row = {
@@ -553,11 +651,166 @@ def _operation_rows(output):
     return rows
 
 
+def _intent_context_data(input_data, paths, alignment_path):
+    instructions = []
+    for item in input_data['instructions']:
+        row = {'instruction_id': item['instruction_id'], 'raw_text': item['raw_text']}
+        if 'must_keep' in item:
+            row['must_keep'] = list(item['must_keep'])
+        instructions.append(row)
+    return {
+        'schema': 'auto-cut-slicing/intent-context', 'schema_version': 1,
+        'timeline_basis': input_data['source']['timeline_basis'],
+        'sources': [{'source_id': input_data['source']['source_id'],
+                     'path': str(paths['source_path']), 'asr': str(alignment_path)}],
+        'instructions': instructions,
+        'evidence_dir': os.path.relpath(paths['evidence_dir'],
+                                        paths['intent_context_path'].parent),
+    }
+
+
+def _edit_context(paths, descriptor):
+    from .context import EditContext
+
+    try:
+        return EditContext(paths['intent_context_path'], describe=lambda _: descriptor)
+    except SlicingError as error:
+        raise VmError('INVALID_INPUT', 'Instruction or source IDs cannot form an intent context') from error
+
+
+def _analysis(input_data, context, paths, descriptor):
+    """Return the alignment bound by a ready analyze result after rechecking its files."""
+    try:
+        _regular_file(paths['analyze_result_path'], 'ANALYSIS_REQUIRED')
+        analyzed = read_json(paths['analyze_result_path'])
+    except (VmError, OSError, ValueError) as error:
+        raise VmError('ANALYSIS_REQUIRED', 'Run analyze before AI planning') from error
+    if (not isinstance(analyzed, dict) or analyzed.get('status') != 'ready'
+            or analyzed.get('input_sha256') != context['input_sha256']):
+        raise VmError('ANALYSIS_REQUIRED', 'Analyze result is not ready for this input')
+    alignment_path = paths['run_dir'] / 'alignment.words.json'
+    _regular_file(alignment_path, 'WORD_ALIGNMENT_UNRESOLVED')
+    if file_sha256(alignment_path) != analyzed.get('alignment_sha256'):
+        raise VmError('PLAN_CHANGED', 'Word alignment differs from the analyze result')
+    try:
+        load_alignment(alignment_path, descriptor)
+    except SlicingError as error:
+        raise VmError('WORD_ALIGNMENT_UNRESOLVED', 'Word timing does not match the selected source') from error
+    _regular_file(paths['intent_context_path'], 'PLAN_CHANGED')
+    if (read_json(paths['intent_context_path']) != _intent_context_data(input_data, paths, alignment_path)
+            or file_sha256(paths['intent_context_path']) != analyzed.get('intent_context_sha256')):
+        raise VmError('PLAN_CHANGED', 'Intent context differs from the analyze result')
+    return alignment_path
+
+
+def _intent_engine(input_data, context, paths, descriptor):
+    from .intent import IntentError, compile_intent, validate
+
+    alignment_path = _analysis(input_data, context, paths, descriptor)
+    intent_path = paths['intent_path']
+    if not intent_path.exists():
+        raise VmError('INTENT_MISSING', 'No edit intent was written for this run')
+    _regular_file(intent_path, 'INTENT_INVALID')
+    edit_context = _edit_context(paths, descriptor)
+    checked = validate(intent_path, edit_context)
+    if checked['problems']:
+        raise VmError('INTENT_INVALID', 'Edit intent failed validation', blockers=[
+            {'code': row['code'], 'rule': row['rule'], 'message': row['message'], 'path': row['path']}
+            for row in checked['problems']])
+    intent = read_json(intent_path)
+    if checked['status'] != 'proposed':
+        raise VmError('INTENT_BLOCKED', 'Edit intent is blocked', blockers=intent.get('blockers', []))
+    if len(intent['outputs']) != 1:
+        raise VmError('INTENT_INVALID', 'A VM/PMO run renders exactly one output', blockers=[
+            {'code': 'INTENT_INVALID', 'rule': 'VM', 'path': '$.outputs',
+             'message': 'A VM/PMO run renders exactly one output'}])
+    with tempfile.TemporaryDirectory(prefix='.vm-intent-', dir=paths['run_dir']) as temporary:
+        work = Path(temporary)
+        try:
+            compile_intent(intent_path, edit_context, work / 'job.json', work / 'receipt.json',
+                           work / 'plan.json')
+        except IntentError as error:
+            raise VmError('INTENT_INVALID', 'Edit intent failed compilation', blockers=[
+                {'code': row['code'], 'rule': row['rule'], 'message': row['message'],
+                 'path': row['path']} for row in error.problems]) from error
+        engine = read_json(work / 'plan.json')
+    if file_sha256(intent_path) != checked['intent_sha256']:
+        raise VmError('PLAN_CHANGED', 'Edit intent changed during planning')
+    return engine, intent, checked['intent_sha256'], alignment_path
+
+
+def _edit_signature(output):
+    return {
+        'duration_us': output['duration_us'],
+        'segments': [(row['source_id'], row['source_start_us'], row['duration_us'])
+                     for row in output['segments']],
+        'effects': sorted((row['kind'], row.get('source_start_us'), row.get('source_end_us'),
+                           row.get('frame_time_us')) for row in output.get('effects', [])),
+    }
+
+
+def _cross_check_rule(input_data, paths, descriptor, alignment_path, output):
+    """When the fixed-pattern parser also understands the feedback, both must agree."""
+    if len(input_data['instructions']) != 1:
+        return None
+    try:
+        clips = _parse_review_clips(input_data, descriptor)
+        rule = _review_engine_plan(input_data, paths['source_path'], descriptor, clips,
+                                   paths['run_dir'],
+                                   alignment_path if _requires_alignment(clips) else None)
+    except VmError:
+        return 'not_applicable'
+    if _edit_signature(rule['outputs'][0]) != _edit_signature(output):
+        raise VmError('INTENT_RULE_MISMATCH', 'Intent and fixed-pattern edits differ', blockers=[{
+            'code': 'INTENT_RULE_MISMATCH',
+            'message': 'The fixed-pattern parser also understands this instruction but compiles '
+                       'to different segments or effects; review both readings.',
+        }])
+    return 'agreed'
+
+
+def _instruction_segments(input_data, intent, output):
+    owner = {}
+    for clip in intent['outputs'][0]['clips']:
+        owner[clip['intent_id']] = clip['intent_id']
+        for operation in clip.get('operations', []):
+            owner[operation['intent_id']] = clip['intent_id']
+    results = []
+    for item in input_data['instructions']:
+        clips = {owner[intent_id] for row in intent['coverage']
+                 if row['span']['instruction_id'] == item['instruction_id']
+                 and row['disposition'] == 'operation'
+                 for intent_id in row.get('intent_ids', []) if intent_id in owner}
+        results.append({
+            'instruction_id': item['instruction_id'], 'source_field_id': item['source_field_id'],
+            'raw_text': item['raw_text'], 'status': 'resolved',
+            'segments': [row['id'] for row in output['segments'] if row['clip_id'] in clips],
+        })
+    return results
+
+
 def _build_plan(input_data, context, paths):
     _validate_input(input_data)
     descriptor = _source_descriptor(input_data, paths['source_path'])
     row = input_data['instructions'][0]
-    if input_data['schema_version'] == 1:
+    version = input_data['schema_version']
+    mode = input_data.get('planning_mode', 'rule')
+    intent = intent_sha256 = cross_check = None
+    output_id = 'review'
+    if mode == 'ai_intent':
+        engine, intent, intent_sha256, alignment = _intent_engine(input_data, context, paths, descriptor)
+        output = engine['outputs'][0]
+        output_id = output['id']
+        cross_check = _cross_check_rule(input_data, paths, descriptor, alignment, output)
+        plan_segments = [{
+            'segment_id': segment['id'], 'source_id': segment['source_id'],
+            'source_start_us': segment['source_start_us'],
+            'duration_us': segment['duration_us'], 'target_start_us': segment['target_start_us'],
+        } for segment in output['segments']]
+        operations = _operation_rows(output, with_intent=True)
+        expected_duration_ms = round(output['duration_us'] / 1000)
+        alignment_sha256 = file_sha256(alignment)
+    elif version == 1:
         segments = _segments(input_data, descriptor)
         engine = _engine_plan(input_data, paths['source_path'], descriptor, segments,
                               paths['run_dir'])
@@ -583,22 +836,36 @@ def _build_plan(input_data, context, paths):
         expected_duration_ms = round(output['duration_us'] / 1000)
         instruction_segments = [segment['segment_id'] for segment in plan_segments]
         alignment_sha256 = file_sha256(alignment) if alignment is not None else None
+    if mode == 'ai_intent':
+        instruction_results = _instruction_segments(input_data, intent, output)
+    else:
+        instruction_results = [{
+            'instruction_id': row['instruction_id'], 'source_field_id': row['source_field_id'],
+            'raw_text': row['raw_text'], 'status': 'resolved',
+            'segments': instruction_segments,
+        }]
     plan = {
         'protocol': PROTOCOL, 'schema_version': input_data['schema_version'], **_identity(input_data),
         'source': input_data['source'],
         'input_sha256': context['input_sha256'],
         'source_sha256': descriptor['sha256'],
-        'instruction_results': [{
-            'instruction_id': row['instruction_id'], 'source_field_id': row['source_field_id'],
-            'raw_text': row['raw_text'], 'status': 'resolved',
-            'segments': instruction_segments,
-        }],
+        'instruction_results': instruction_results,
         'segments': plan_segments, 'operations': operations,
         'expected_duration_ms': expected_duration_ms,
         'engine_plan_sha256': engine['plan_sha256'],
     }
-    if input_data['schema_version'] == 2:
+    if version >= 2:
         plan['alignment_sha256'] = alignment_sha256
+    if version == 3:
+        plan.update({
+            'planning_mode': mode, 'output_id': output_id,
+            'ai_session': input_data.get('ai_session'),
+            'intent_sha256': intent_sha256,
+            'evidence_manifest_sha256': (intent['bindings']['evidence_manifest_sha256']
+                                         if intent else None),
+            'coverage': intent['coverage'] if intent else None,
+            'rule_cross_check': cross_check,
+        })
     return plan, engine
 
 
@@ -618,14 +885,11 @@ def plan_command(input_path, context_path):
         try:
             plan, _ = _build_plan(input_data, context, paths)
         except (VmError, SlicingError, OSError, ValueError) as error:
-            receipt = {**base, 'status': 'blocked', 'plan_sha256': None,
-                       'instruction_results': _instruction_results(input_data),
-                       'error': _error(error)}
+            receipt = _blocked_receipt(base, input_data, paths, error)
             write_new_json(paths['plan_result_path'], receipt)
             return receipt
         write_new_json(paths['plan_path'], plan)
-        receipt = {**base, 'status': 'ready', 'plan_sha256': file_sha256(paths['plan_path']),
-                   'instruction_results': plan['instruction_results'], 'error': None}
+        receipt = _ready_receipt(base, plan, file_sha256(paths['plan_path']))
         write_new_json(paths['plan_result_path'], receipt)
         return receipt
 
@@ -654,12 +918,9 @@ def render_command(input_path, context_path, plan_path):
         if receipt.get('status') != 'ready' or receipt.get('plan_sha256') != plan_hash:
             raise VmError('PLAN_CHANGED', 'Plan bytes differ from the ready receipt')
         expected_plan, engine = _build_plan(input_data, context, paths)
-        if saved_plan != expected_plan or receipt != {
-            **base, 'status': 'ready', 'plan_sha256': plan_hash,
-            'instruction_results': expected_plan['instruction_results'], 'error': None,
-        }:
+        if saved_plan != expected_plan or receipt != _ready_receipt(base, expected_plan, plan_hash):
             raise VmError('PLAN_CHANGED', 'Plan or ready receipt differs from current inputs')
-        media = render_output(engine, 'review', paths['output_path'], width=1920,
+        media = render_output(engine, engine['outputs'][0]['id'], paths['output_path'], width=1920,
                               height=1080, fps=25, input_demuxer='mov')
         artifact = {
             'kind': 'review_mp4', 'path': str(paths['output_path']),
@@ -681,20 +942,170 @@ def render_command(input_path, context_path, plan_path):
     return result
 
 
+def _v3_request(input_path, context_path, *, ai_only=True):
+    _regular_file(input_path, 'INVALID_CONTEXT')
+    _regular_file(context_path, 'INVALID_CONTEXT')
+    input_data = read_json(input_path)
+    context = read_json(context_path)
+    paths = _validate_context(context, input_path, context_path)
+    if context['schema_version'] != 3 or input_data.get('schema_version') != 3:
+        raise VmError('INVALID_CONTEXT', 'analyze and qa require schema v3 input and context')
+    _validate_input(input_data)
+    if ai_only and input_data['planning_mode'] != 'ai_intent':
+        raise VmError('INVALID_INPUT', 'This step is only used with ai_intent planning')
+    return input_data, context, paths, _receipt_base(input_data, context)
+
+
+def _existing_analysis(input_data, context, paths, base):
+    target = paths['analyze_result_path']
+    if not target.exists():
+        return None
+    _regular_file(target, 'PLAN_CHANGED')
+    saved = read_json(target)
+    if not isinstance(saved, dict) or {key: saved.get(key) for key in base} != base:
+        raise VmError('OUTPUT_EXISTS', 'Existing analyze result belongs to a different request')
+    if saved.get('status') == 'ready':
+        descriptor = _source_descriptor(input_data, paths['source_path'])
+        _analysis(input_data, context, paths, descriptor)
+    elif saved.get('status') != 'blocked':
+        raise VmError('PLAN_CHANGED', 'Existing analyze result has an unsupported status')
+    return saved
+
+
+def analyze_command(input_path, context_path):
+    """Prepare source-bound ASR, the intent context and the first evidence for AI planning."""
+    from .evidence import load_manifest, manifest_path, transcript_window
+
+    input_data, context, paths, base = _v3_request(input_path, context_path)
+    with _plan_lock(paths['run_dir']):
+        existing = _existing_analysis(input_data, context, paths, base)
+        if existing is not None:
+            return existing
+        try:
+            descriptor = _source_descriptor(input_data, paths['source_path'])
+            alignment = _alignment_path(input_data, paths['source_path'], descriptor, paths['run_dir'])
+            data = _intent_context_data(input_data, paths, alignment)
+            if paths['intent_context_path'].exists():
+                _regular_file(paths['intent_context_path'], 'PLAN_CHANGED')
+                if read_json(paths['intent_context_path']) != data:
+                    raise VmError('PLAN_CHANGED', 'Existing intent context differs from this input')
+            else:
+                write_new_json(paths['intent_context_path'], data)
+            paths['evidence_dir'].mkdir(exist_ok=True)
+            edit_context = _edit_context(paths, descriptor)
+            source_id = input_data['source']['source_id']
+            entries = {row['evidence_id'] for row in load_manifest(edit_context)['entries']}
+            if 'transcript-full' not in entries:
+                transcript_window(edit_context, source_id, 'transcript-full', 0,
+                                  descriptor['duration_us'])
+            result = {
+                **base, 'status': 'ready', 'planning_mode': 'ai_intent',
+                'alignment_sha256': file_sha256(alignment),
+                'intent_context_sha256': file_sha256(paths['intent_context_path']),
+                'evidence_manifest_sha256': file_sha256(manifest_path(edit_context)),
+                'evidence_ids': ['transcript-full'], 'error': None,
+            }
+        except (VmError, SlicingError, OSError, ValueError) as error:
+            result = {**base, 'status': 'blocked', 'planning_mode': 'ai_intent',
+                      'alignment_sha256': None, 'intent_context_sha256': None,
+                      'evidence_manifest_sha256': None, 'evidence_ids': [],
+                      'error': _error(error)}
+        write_new_json(paths['analyze_result_path'], result)
+        return result
+
+
+def qa_command(input_path, context_path, *, reverse_asr=False):
+    """Run content QA on the rendered MP4 and publish its outcome as ``qa-result.json``.
+
+    The receipt is written once for checked, blocked and failed outcomes alike; a repeated
+    call returns the saved receipt instead of running QA again.
+    """
+    input_data, context, paths, base = _v3_request(input_path, context_path)
+    receipt_path = paths['run_dir'] / 'qa-result.json'
+    with _plan_lock(paths['run_dir']):
+        if receipt_path.exists():
+            _regular_file(receipt_path, 'PLAN_CHANGED')
+            saved = read_json(receipt_path)
+            if not isinstance(saved, dict) or {key: saved.get(key) for key in base} != base:
+                raise VmError('OUTPUT_EXISTS', 'Existing QA result belongs to a different request')
+            return saved
+        result = _qa_outcome(input_data, context, paths, base, reverse_asr)
+        write_new_json(receipt_path, result)
+        return result
+
+
+def _qa_outcome(input_data, context, paths, base, reverse_asr):
+    from .qa import run_qa
+
+    plan_hash = None
+    try:
+        if paths['qa_path'].exists():
+            raise VmError('OUTPUT_EXISTS', 'QA report already exists')
+        try:
+            _regular_file(paths['result_path'], 'RENDER_REQUIRED')
+            rendered = read_json(paths['result_path'])
+        except (OSError, ValueError) as error:
+            raise VmError('RENDER_REQUIRED', 'Render result is unavailable') from error
+        if not isinstance(rendered, dict) or rendered.get('status') != 'rendered' or (
+            {key: rendered.get(key) for key in base} != base
+        ):
+            raise VmError('RENDER_REQUIRED', 'QA requires a rendered result for this run')
+        _regular_file(paths['plan_path'], 'PLAN_CHANGED')
+        plan_hash = file_sha256(paths['plan_path'])
+        artifact = rendered['artifacts'][0]
+        _regular_file(paths['output_path'], 'PLAN_CHANGED')
+        if (rendered.get('plan_sha256') != plan_hash or artifact['path'] != str(paths['output_path'])
+                or file_sha256(paths['output_path']) != artifact['sha256']):
+            raise VmError('PLAN_CHANGED', 'Rendered MP4 or plan differs from the render result')
+        expected_plan, engine = _build_plan(input_data, context, paths)
+        if read_json(paths['plan_path']) != expected_plan:
+            raise VmError('PLAN_CHANGED', 'Plan differs from current inputs')
+        descriptor = _source_descriptor(input_data, paths['source_path'])
+        video_asr = None
+        if reverse_asr:
+            video_asr = paths['run_dir'] / 'output.words.json'
+            if not video_asr.exists():
+                try:
+                    transcribe_source({'path': str(paths['output_path']), 'sha256': artifact['sha256']},
+                                      video_asr)
+                except Exception as error:
+                    raise VmError('WORD_ALIGNMENT_UNRESOLVED', 'Output transcription is unavailable') from error
+            _regular_file(video_asr, 'WORD_ALIGNMENT_UNRESOLVED')
+        with tempfile.TemporaryDirectory(prefix='.vm-qa-', dir=paths['run_dir']) as temporary:
+            engine_path = write_json(Path(temporary) / 'plan.json', engine)
+            report = run_qa(_edit_context(paths, descriptor), paths['intent_path'], engine_path,
+                            engine['outputs'][0]['id'], paths['output_path'], video_asr,
+                            paths['qa_path'], plan_binding_path=paths['plan_path'])
+        return {**base, 'status': 'checked', 'plan_sha256': plan_hash,
+                'qa_sha256': file_sha256(paths['qa_path']), 'overall': report['overall'],
+                'counts': report['counts'], 'reverse_asr': reverse_asr, 'error': None}
+    except (VmError, SlicingError, OSError, ValueError, KeyError, TypeError, IndexError) as error:
+        return {**base, 'status': 'blocked' if isinstance(error, VmError) else 'failed',
+                'plan_sha256': plan_hash, 'qa_sha256': None, 'overall': None,
+                'counts': None, 'reverse_asr': reverse_asr, 'error': _error(error)}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='python -m auto_cut_slicing.vm_pmo')
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('plan', 'render'):
+    for name in ('analyze', 'plan', 'render', 'qa'):
         command = commands.add_parser(name)
         command.add_argument('--input', required=True, type=Path)
         command.add_argument('--context', required=True, type=Path)
         if name == 'render':
             command.add_argument('--plan', required=True, type=Path)
+        if name == 'qa':
+            command.add_argument('--reverse-asr', action='store_true',
+                                 help='Transcribe the rendered MP4 for spoken-content checks')
     args = parser.parse_args(argv)
     try:
         if not args.input.is_absolute() or not args.context.is_absolute():
             raise VmError('INVALID_CONTEXT', 'Input and context arguments must be absolute paths')
-        if args.command == 'plan':
+        if args.command == 'analyze':
+            result = analyze_command(args.input, args.context)
+        elif args.command == 'qa':
+            result = qa_command(args.input, args.context, reverse_asr=args.reverse_asr)
+        elif args.command == 'plan':
             result = plan_command(args.input, args.context)
         else:
             if not args.plan.is_absolute():
@@ -706,7 +1117,7 @@ def main(argv=None):
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))
-    return 0 if result['status'] in ('ready', 'rendered', 'blocked') else 1
+    return 0 if result['status'] in ('ready', 'rendered', 'blocked', 'checked') else 1
 
 
 if __name__ == '__main__':

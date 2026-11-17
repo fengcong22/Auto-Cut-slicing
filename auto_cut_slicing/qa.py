@@ -254,7 +254,10 @@ def _cuts(output: dict[str, Any], durations: dict[str, int]):
             yield segment, "out", end, segment["target_start_us"] + segment["duration_us"]
 
 
-def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video_asr, report_path):
+def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video_asr, report_path,
+           *, plan_binding_path=None):
+    """``plan_binding_path`` names the persisted plan file the report binds when ``plan_path``
+    is a temporary engine plan derived from it (VM/PMO binds its own ``plan.json``)."""
     from .media import describe_source
 
     report_path = Path(report_path)
@@ -474,7 +477,7 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
     report = {
         "schema": "auto-cut-slicing/qa-report", "schema_version": 1,
         "bindings": {
-            "intent_sha256": file_sha256(intent_path), "plan_sha256": file_sha256(plan_path),
+            "intent_sha256": file_sha256(intent_path), "plan_sha256": file_sha256(plan_binding_path or plan_path),
             "output_id": output_id, "output_sha256": descriptor["sha256"],
             "source_sha256s": sorted({context.source(sid)["sha256"] for sid in durations}),
             "output_alignment_sha256": out_alignment["sha256"] if out_alignment else None,
