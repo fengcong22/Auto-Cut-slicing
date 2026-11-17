@@ -25,6 +25,8 @@ Develop on `codex/*`, `feature/*` or `fix/*` branches. It is not an Auto-Cut Lit
   do not retain an earlier introductory clause merely to reach an ASR sentence boundary.
   Start adjustments normally stay within about one second. Larger changes require content review,
   not a blind one-second clamp; encode the reviewed start with a source-bound `start_cue`.
+  A requested end time that lands on the last word's end or in the following pause is also an anchor:
+  extend the cut into the measured `audio-gap` out-window (at most about one second) to keep the decay.
 - Inspect the first picture at every output opening and splice, plus the surrounding transition.
   Residual previous-topic content requires a reviewed clean later frame and a bounded freeze
   until natural new content can resume, with original audio continuing. Pixel/source equality
