@@ -4,7 +4,7 @@
 
 - `vm_pmo` 已接受 schema v3，并提供 `analyze`、`plan`、`render`、`qa` 四个命令（见下文“已实现的包侧细节”）。
 - 包版本仍为 `0.3.0`，`PACKAGE-MANIFEST.json` 仍声明 contract v2 / driver `vm_pmo_review_video_v2`，字节未变，在途 v2 运行不受影响。
-  改 manifest 声明 v3 要等“在途任务风险”的处理方式确定之后。
+  在途任务按“升级前清空”处理（见“已确定的决定”）；manifest 在 Taskboard v3 driver 就绪、部署切换时再改。
 - Taskboard 侧（第 2 步启动 AI、v3 driver、审批界面）未实现。生产运行不得按本文发起。
 - 第 6 步 `qa-review.json` 只预留了路径，包内没有读写它的命令。
 
@@ -82,7 +82,7 @@ v3 让 Taskboard 启动的 AI 按工作流写出 `edit-intent.json`，由包校�
 - 包发布 v3 时 manifest 声明 contract v3、driver `vm_pmo_review_video_v3`。Taskboard 需要同时支持 v2 和 v3 driver。
 - **在途任务风险**：`_validate_input` 要求 `package.version` 等于 `0.3.0`，且 manifest 哈希一致。
   包升级后，按旧版本登记、尚未完成的 v2 运行会以 `PACKAGE_MISMATCH` 阻断。
-  升级前须清空在途运行，或由 Taskboard 按新包重新登记；这需要 Taskboard 侧确认处理方式。
+  已确定：升级前清空在途运行，确认没有未完成的 v2 运行后再切换包版本；Taskboard 不做重新登记迁移。
 - 本地批量请求（`run`，contract v1）计划增加 `output.intent`，与 `instruction`、`clips` 三选一；旧请求和 `--resume` 不变。
 
 ## 已实现的包侧细节
@@ -143,8 +143,15 @@ stdout：`status: checked`、`qa_sha256`、`overall`、`counts`、`reverse_asr`�
 **测试边界**：`tests/test_vm_pmo_v3.py` 用合成媒体、合成 ASR 和手写意图代替真实 ASR 与 AI 步骤，
 只验证确定性机制，不代表真实识别、AI 判断、试听或 Taskboard 交付。
 
+## 已确定的决定（2026-11-17 用户确认）
+
+| 问题 | 决定 |
+| --- | --- |
+| 包升级时的在途 v2 运行 | 升级前清空，确认没有未完成的 v2 运行再切换；不做重新登记迁移 |
+| AI 写意图步骤的超时与重试 | 15 分钟；不自动重试。超时或没写出意图文件记为阻断，交审批环节由人决定是否重跑（重跑复用同一运行目录与证据） |
+| 成片反向 ASR | 默认开启：Taskboard 调用 `qa` 时传 `--reverse-asr`，每轮多一次 ASR 费用 |
+
 ## 待确认问题
 
 - Taskboard 无界面启动的 Codex 能否读取本地图片。不能读取时，画面检查全部为 `needs_human`。
-- AI 步骤的超时、费用上限和重试次数由 Taskboard 设定，本包只要求重试时复用同一运行目录与证据。
-- 成片反向 ASR 每轮多一次 ASR 调用，是否默认开启。
+- AI 步骤的费用上限（超时已定为 15 分钟）。
