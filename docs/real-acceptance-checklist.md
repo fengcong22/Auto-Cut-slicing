@@ -27,7 +27,7 @@
 - [ ] 真实 ASR 冒烟：对一段短真实素材运行 `python -m auto_cut_slicing transcribe <源> --output <words.json>`，
   确认词级时间戳绑定源哈希，且抽查 3 处词界与听感一致。
 - [ ] Taskboard 包预览：识别为 `auto-cut-slicing` `0.3.0`、模板 `vm_pmo_review_video` v1、
-  contract v2、driver `vm_pmo_review_video_v2`；manifest 摘要与包仓库一致。
+  contract v3、driver `vm_pmo_review_video_v3`（2026-11-17 前为 v2）；manifest 摘要与包仓库一致。
 - [ ] Taskboard 离线脚本 `check-vm-pmo-offline.mjs` 在当前两个提交上再跑一次，并通过。
 - [ ] Bridge 与 Taskboard 只监听 `127.0.0.1`。
 

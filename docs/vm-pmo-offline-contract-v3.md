@@ -1,11 +1,13 @@
 # VM / PMO 离线剪辑协议 v3
 
-**状态：包侧已实现（第一阶段），尚未声明、尚未接入 Taskboard。**
+**状态：包侧与 Taskboard 侧均已实现，manifest 已声明 v3（2026-11-17）；真实测试记录验收（第三阶段）尚未进行。**
 
 - `vm_pmo` 已接受 schema v3，并提供 `analyze`、`plan`、`render`、`qa` 四个命令（见下文“已实现的包侧细节”）。
-- 包版本仍为 `0.3.0`，`PACKAGE-MANIFEST.json` 仍声明 contract v2 / driver `vm_pmo_review_video_v2`，字节未变，在途 v2 运行不受影响。
-  在途任务按“升级前清空”处理（见“已确定的决定”）；manifest 在 Taskboard v3 driver 就绪、部署切换时再改。
-- Taskboard 侧（第 2 步启动 AI、v3 driver、审批界面）未实现。生产运行不得按本文发起。
+- 包版本仍为 `0.3.0`；`PACKAGE-MANIFEST.json` 声明 contract v3 / driver `vm_pmo_review_video_v3`。
+  切换前已按“升级前清空”确认没有在途生产运行（仅一条测试运行，按用户决定任其以 `PACKAGE_MISMATCH` 阻断）。
+- Taskboard 侧 v3 driver 已合并（fengcong22/feishu-codex-Taskboard#25）。启用还需要 Taskboard 配置
+  `CODEX_VM_PMO_AI_MODEL` 和沙箱可读的 FFmpeg 目录 `CODEX_VM_PMO_AI_TOOL_DIR`。
+- 包仍接受 schema v1 / v2 输入，行为与计划哈希不变。
 - 第 6 步 `qa-review.json` 只预留了路径，包内没有读写它的命令。
 
 v1、v2 见 [v1](vm-pmo-offline-contract-v1.md)、[v2](vm-pmo-offline-contract-v2.md)，行为和计划哈希保持不变。
