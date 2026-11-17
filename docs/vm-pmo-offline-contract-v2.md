@@ -1,6 +1,6 @@
 # VM / PMO Offline Editing Contract v2
 
-This contract adds parent-bound review rounds and evidence-backed semantic editing. Schema v1 remains frozen in [the v1 contract](vm-pmo-offline-contract-v1.md). Package version `0.3.0` declares execution contract `vm_pmo_review_video` v2. This declaration is only one activation prerequisite; Taskboard independently verifies Bridge provenance, local policy, package identity, Python runtime, and live Base bindings.
+This contract adds parent-bound review rounds and evidence-backed semantic editing. Schema v1 remains frozen in [the v1 contract](vm-pmo-offline-contract-v1.md). Package version `0.3.0` originally declared execution contract `vm_pmo_review_video` v2; since 2026-11-17 its manifest declares contract v3 ([v3](vm-pmo-offline-contract-v3.md)), and schema v2 inputs remain accepted unchanged. This declaration is only one activation prerequisite; Taskboard independently verifies Bridge provenance, local policy, package identity, Python runtime, and live Base bindings.
 
 The local entry points remain:
 

@@ -6,7 +6,7 @@
 
 ## 工作流
 
-包模板身份保持 `vm_pmo_review_video` v1。当前 Auto-Cut manifest 声明执行 contract v2 和固定 driver `vm_pmo_review_video_v2`；Taskboard 从受信包工作区复核真实 manifest、摘要与本机 Python runtime。普通 ZIP runner 不接受 VM 包，VM/PMO 使用独立的 Bridge 登记接口、编排器、结果校验器与 MP4 交付 worker。
+包模板身份保持 `vm_pmo_review_video` v1。当前 Auto-Cut manifest 声明执行 contract v3 和 driver `vm_pmo_review_video_v3`（2026-11-17 起，见 [v3](vm-pmo-offline-contract-v3.md)；此前为 v2）；Taskboard 从受信包工作区复核真实 manifest、摘要与本机 Python runtime。普通 ZIP runner 不接受 VM 包，VM/PMO 使用独立的 Bridge 登记接口、编排器、结果校验器与 MP4 交付 worker。
 
 | 阶段 | 输入与执行 | 成功条件 |
 | --- | --- | --- |
