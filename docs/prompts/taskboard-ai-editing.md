@@ -3,7 +3,7 @@
 两种入口的启动提示。`<…>` 为启动方填写的值。提示只给出位置和边界，规则以仓库文档为准，
 不要把规则复制进提示，以免文档更新后两处不一致。
 
-## Taskboard 自动调度（v3 实现后使用）
+## Taskboard 自动调度（包侧 v3 已实现；Taskboard 接入后使用）
 
 ```text
 你在 auto-cut-slicing 仓库中执行一次 VM/PMO 剪辑规划。
@@ -11,7 +11,8 @@
 运行目录：<run_dir>
 输入：<run_dir>\input.json
 上下文：<run_dir>\execution-context.json
-证据清单：<run_dir>\evidence\manifest.json（已由 analyze 生成）
+意图上下文：<run_dir>\intent-context.json（证据命令的 --context 用它）
+证据清单：<run_dir>\evidence\manifest.json（已由 analyze 生成，含完整转写 transcript-full）
 
 先阅读：
 1. AGENTS.md

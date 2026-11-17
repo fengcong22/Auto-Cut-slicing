@@ -48,7 +48,8 @@
 | 成片反向 ASR | 手动：对成片运行 `transcribe`，再把结果传给 `qa --video-asr` |
 | 内容质量检查 | 已实现：`qa --context C --intent I --plan P --output-id O --video V --report R [--video-asr W]`，并导出接缝帧 |
 | AI 复核 QA 画面（qa-review） | **未实现**。看图后的结论写在报告之外，不能修改 `qa.json` |
-| Taskboard 自动入口携带意图 | **不支持**。v2 只接受固定句式或 `manual_revision`，见 [v3 草案](vm-pmo-offline-contract-v3.md) |
+| VM/PMO v3 包侧命令 | 已实现：`vm_pmo analyze` / `plan`（`planning_mode: ai_intent`）/ `render` / `qa`，见 [v3](vm-pmo-offline-contract-v3.md)；manifest 尚未声明 v3 |
+| Taskboard 自动入口携带意图 | **未接入**。Taskboard 还没有 v3 driver 和启动 AI 的步骤，生产仍走 v2 固定句式或 `manual_revision` |
 | AI 在 Taskboard 中看图 | **未验证**。在验证前，画面判断一律交给审批环节由人复核 |
 
 ## 步骤

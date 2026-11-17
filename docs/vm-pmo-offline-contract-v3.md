@@ -1,7 +1,12 @@
-# VM / PMO 离线剪辑协议 v3 · 设计草案
+# VM / PMO 离线剪辑协议 v3
 
-**状态：设计草案，未实现。** 包版本 `0.3.0` 的 manifest 仍声明 contract v2，`vm_pmo` 只接受 schema v1 / v2。
-本文定义 Taskboard 自动调度时 AI 如何参与规划，供两边实现时对照。实现前不得按本文发起运行。
+**状态：包侧已实现（第一阶段），尚未声明、尚未接入 Taskboard。**
+
+- `vm_pmo` 已接受 schema v3，并提供 `analyze`、`plan`、`render`、`qa` 四个命令（见下文“已实现的包侧细节”）。
+- 包版本仍为 `0.3.0`，`PACKAGE-MANIFEST.json` 仍声明 contract v2 / driver `vm_pmo_review_video_v2`，字节未变，在途 v2 运行不受影响。
+  改 manifest 声明 v3 要等“在途任务风险”的处理方式确定之后。
+- Taskboard 侧（第 2 步启动 AI、v3 driver、审批界面）未实现。生产运行不得按本文发起。
+- 第 6 步 `qa-review.json` 只预留了路径，包内没有读写它的命令。
 
 v1、v2 见 [v1](vm-pmo-offline-contract-v1.md)、[v2](vm-pmo-offline-contract-v2.md)，行为和计划哈希保持不变。
 AI 规划的步骤与规则见 [AI 参与剪辑工作流](ai-editing-workflow.md) 和 [意图计划](intent-schema.md)。
@@ -79,6 +84,64 @@ v3 让 Taskboard 启动的 AI 按工作流写出 `edit-intent.json`，由包校�
   包升级后，按旧版本登记、尚未完成的 v2 运行会以 `PACKAGE_MISMATCH` 阻断。
   升级前须清空在途运行，或由 Taskboard 按新包重新登记；这需要 Taskboard 侧确认处理方式。
 - 本地批量请求（`run`，contract v1）计划增加 `output.intent`，与 `instruction`、`clips` 三选一；旧请求和 `--resume` 不变。
+
+## 已实现的包侧细节
+
+命令：
+
+```powershell
+python -m auto_cut_slicing.vm_pmo analyze --input <run_dir>\input.json --context <run_dir>\execution-context.json
+python -m auto_cut_slicing.vm_pmo plan    --input ... --context ...
+python -m auto_cut_slicing.vm_pmo render  --input ... --context ... --plan <run_dir>\plan.json
+python -m auto_cut_slicing.vm_pmo qa      --input ... --context ... [--reverse-asr]
+```
+
+stdout 仍是单行 JSON。`ready` / `rendered` / `blocked` / `checked` 退出码为 0，`failed` 为 1。
+
+**输入 v3**：在 v2 字段之外，必填 `planning_mode`；`ai_intent` 时必填 `ai_session {agent, model, session_id}`，
+`rule` 时不得出现 `ai_session`。可选 `prior_rounds`：`[{round_id, instructions: [{instruction_id, raw_text}]}]`，
+只读、不执行。`manual_revision` 只能与 `rule` 一起使用。
+
+**Context v3**：在 v2 字段之外，必填 `evidence_dir`、`intent_context_path`、`intent_path`、`analyze_result_path`、
+`qa_path`、`qa_review_path`。全部在 `run_dir` 内、互不相同；JSON 路径不得位于 `evidence_dir` 内，
+也不得占用固定文件 `alignment.words.json`、`output.words.json`、`.plan.lock`。
+
+**analyze**（仅 `ai_intent`）：
+- 校验源，调用 ASR 写 `alignment.words.json`（已存在则复用、只复核）。
+- 由 input 生成 `intent_context_path` 指向的 intent-context（源用绝对路径，`evidence_dir` 为相对路径），
+  AI 的证据命令都读取这个文件。
+- 写一条完整转写证据 `transcript-full`。
+- `analyze-result.json`：`status`、`planning_mode`、`alignment_sha256`、`intent_context_sha256`、
+  `evidence_manifest_sha256`、`evidence_ids`、`error`。ASR 失败时为 `blocked` / `WORD_ALIGNMENT_UNRESOLVED`。
+- 重复调用返回已有结果，ready 时先复核对齐和 intent-context 未被改动。
+
+**plan（`ai_intent`）**：
+1. 复核 analyze 结果、对齐文件和 intent-context，与当前 input 不一致即阻断。
+2. 意图文件不存在：`INTENT_MISSING`。
+3. 执行 V01–V13：有问题时为 `INTENT_INVALID`，`blockers` 逐条列出规则、代码、消息和 JSON 路径；
+   意图自身 `status: blocked` 时为 `INTENT_BLOCKED`，`blockers` 原样带出 AI 写的阻断。
+4. 意图必须恰好一个 output；编译并执行 V14。
+5. 交叉核对：只有一条意见、且固定句式解析器也能解析并编译成功时，两边的保留段（源、起点、时长）、
+   效果和总时长必须一致，否则 `INTENT_RULE_MISMATCH`。固定句式解析不了时记为 `not_applicable`，不阻断。
+
+计划在 v2 字段之外增加 `planning_mode`、`output_id`、`ai_session`、`intent_sha256`、`evidence_manifest_sha256`、
+`coverage`、`rule_cross_check`（`agreed` / `not_applicable` / `null`）；每个操作带 `intent_id`。
+`instruction_results` 按覆盖表把每条意见映射到它产生的片段。
+
+`plan-result.json` 增加 `planning_mode`、`intent_sha256`、`coverage`、`blockers`。
+ready 时 `blockers` 为空；blocked 时 `coverage` 为 null，`blockers` 为具体原因（无细分原因时为 `[error]`）。
+已有计划被重复调用时，额外复核意图文件哈希。render 照常完整重算并对照计划，意图在规划后被改动即 `PLAN_CHANGED`。
+
+**plan（`rule`）**：与 v2 相同（单条意见、固定句式或 `manual_revision`），不需要 analyze，
+回执的 `intent_sha256`、`coverage` 为 null。
+
+**qa**（仅 `ai_intent`）：要求 `result.json` 为 `rendered`，且计划、MP4 哈希与之一致；重算计划后调用内容 QA，
+写 `qa_path` 和同目录的 `qa-frames/`。`--reverse-asr` 时先对成片调用 ASR 写 `output.words.json`（会产生费用），默认关闭。
+stdout：`status: checked`、`qa_sha256`、`overall`、`counts`、`reverse_asr`。`checked` 只表示检查已运行，
+`overall` 才是结果；`needs_human` 项仍须人工复核。
+
+**测试边界**：`tests/test_vm_pmo_v3.py` 用合成媒体、合成 ASR 和手写意图代替真实 ASR 与 AI 步骤，
+只验证确定性机制，不代表真实识别、AI 判断、试听或 Taskboard 交付。
 
 ## 待确认问题
 

@@ -22,7 +22,7 @@ JSON Schema 只检查结构。本文的“校验规则”是语义要求，valid
 | `intent validate` / `intent compile` 命令 | 已实现（`auto_cut_slicing/intent.py`），执行 V01–V14 |
 | 规划器按 `word_indices` 定位 | 不改规划器：编译时用 `text` + `rough_time` + 收窄的 `search_radius` 让现有唯一匹配落到选定的那一处，再由 V14 核对 |
 | `audio_point` / `gap_choice` 时间来源 | 已实现：引用 `evidence audio-gap` 的测量结果 |
-| VM/PMO 协议携带意图 | **未实现**，设计见 [v3 草案](vm-pmo-offline-contract-v3.md) |
+| VM/PMO 协议携带意图 | 包侧已实现（`vm_pmo` schema v3），Taskboard 未接入、manifest 未声明，见 [v3](vm-pmo-offline-contract-v3.md) |
 
 不得把“未实现”的命令写成已执行，也不得声称 validator 已经校验过某个意图文件。
 
@@ -200,7 +200,7 @@ V14 是最后一道核对：即使手工编译，也要对照计划中的 `edits
 - 插入源中不存在的静音或停顿（`freeze_frame` 不增加时长；只能保留已有的源尾段）。
 - 变速、倒放、转场特效、字幕、贴图、调色、音量包络、背景音乐。
 - 跨源素材（VM/PMO 每个请求只有一个 source；本地批量请求也只有一个 source）。
-- 草稿通道中的 `mute_phrase` 和 `freeze_cover`（MP4 专用）。
+- 草稿通道中的 `mute_phrase`（MP4 专用）。`freeze_cover` 已可写入草稿，见 [job-format](job-format.md)。
 - 依赖画面内容识别、但没有可看的帧证据又没有人工复核的判断。
 
 ## 版本
