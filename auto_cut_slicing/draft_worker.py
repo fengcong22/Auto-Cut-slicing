@@ -31,12 +31,21 @@ def _draft(payload, upstream):
     import pyJianYingDraft as draft
     from jy_wrapper import JyProject
 
-    from auto_cut_slicing.drafts import _marker_range, _output, _source_ids, validate_saved_draft
-    from auto_cut_slicing.media import extract_source_audio, verify_sources
+    from auto_cut_slicing.drafts import (
+        _draft_effects,
+        _marker_range,
+        _output,
+        _png_size,
+        _source_ids,
+        _video_pieces,
+        validate_saved_draft,
+    )
+    from auto_cut_slicing.media import extract_freeze_frame, extract_source_audio, verify_sources
 
     plan = payload["plan"]
     verify_sources(plan)
     output = _output(plan, payload["output_id"])
+    effects = _draft_effects(plan, output)
     final_path = Path(payload["final_path"]).resolve()
     staging_root = Path(payload["staging_root"]).resolve()
     staged = staging_root / final_path.name
@@ -93,20 +102,60 @@ def _draft(payload, upstream):
         project.script.materials.videos.append(draft.VideoMaterial(str(video_path)))
         if source.get("has_audio"):
             project.script.materials.audios.append(draft.AudioMaterial(str(audio_path)))
-    segments_receipt = []
-    for row in output["segments"]:
-        local = local_sources[row["source_id"]]
+    freeze_receipts = []
+    freeze_images = {}
+    for index, effect in enumerate(effects, 1):
+        source = sources[effect["source_id"]]
+        image = resources / (
+            f"freeze_{index:03d}_{source['sha256'][:12]}_{effect['frame_time_us']}us.png"
+        )
+        extract_freeze_frame(
+            local_sources[effect["source_id"]]["staged_video_path"], effect["frame_time_us"], image
+        )
+        if _png_size(image) != (int(source["width"]), int(source["height"])):
+            raise SlicingError("Freeze frame image size differs from its source picture")
+        freeze_images[effect["item_id"]] = str(image)
+        freeze_receipts.append(
+            {
+                "item_id": effect["item_id"],
+                "source_id": effect["source_id"],
+                "frame_time_us": effect["frame_time_us"],
+                "target_start_us": effect["target_start_us"],
+                "duration_us": effect["duration_us"],
+                "image_path": str(final_path / "Resources" / "local" / image.name),
+                "image_sha256": file_sha256(image),
+                "selection": "last_decoded_frame_at_or_before_frame_time",
+            }
+        )
+    video_receipt = []
+    for piece in _video_pieces(output):
+        frozen = "frame_time_us" in piece
+        local = local_sources[piece["source_id"]]
         video = project.add_clip(
-            local["staged_video_path"],
-            source_start=row["source_start_us"],
-            duration=row["duration_us"],
-            target_start=row["target_start_us"],
+            freeze_images[piece["freeze_item_id"]] if frozen else local["staged_video_path"],
+            source_start=0 if frozen else piece["source_start_us"],
+            duration=piece["duration_us"],
+            target_start=piece["target_start_us"],
             track_name="V1 Retained Video",
         )
         if video is None:
-            raise SlicingError("Upstream could not load a source video")
-        video.volume = 0.0 if sources[row["source_id"]].get("has_audio") else 1.0
-        saved = {**row, "video_segment_id": video.segment_id}
+            raise SlicingError("Upstream could not load a draft video material")
+        if frozen and video.material_instance.material_type != "photo":
+            raise SlicingError("Freeze frame was not loaded as a still picture")
+        video.volume = 0.0 if frozen or sources[piece["source_id"]].get("has_audio") else 1.0
+        video_receipt.append(
+            {
+                "source_id": piece["source_id"],
+                "source_start_us": piece["source_start_us"],
+                "target_start_us": piece["target_start_us"],
+                "duration_us": piece["duration_us"],
+                "freeze_item_id": piece.get("freeze_item_id"),
+                "video_segment_id": video.segment_id,
+            }
+        )
+    segments_receipt = []
+    for row in output["segments"]:
+        saved = dict(row)
         if sources[row["source_id"]].get("has_audio"):
             audio = draft.AudioSegment(
                 draft.AudioMaterial(local["staged_audio_path"]),
@@ -182,6 +231,8 @@ def _draft(payload, upstream):
         "job_sha256": plan.get("job_sha256"),
         "sources": local_sources,
         "segments": segments_receipt,
+        "video_pieces": video_receipt,
+        "freeze_frames": freeze_receipts,
         "markers": marker_receipts,
         "edits": output.get("edits", []),
         "upstream": upstream,

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import struct
 import tempfile
 import wave
 from pathlib import Path
@@ -38,6 +39,47 @@ def _output(plan, output_id):
     return output
 
 
+def _draft_effects(plan, output):
+    """Return planned freeze effects; other effects stay MP4-only."""
+    from .render import _validate_effects
+
+    effects = output.get("effects", [])
+    if not isinstance(effects, list):
+        raise SlicingError("Output effects must be a list")
+    if any(not isinstance(row, dict) or row.get("kind") != "freeze_frame" for row in effects):
+        raise SlicingError("MP4-only effects are not supported in editable draft output")
+    _validate_effects(plan, output)
+    return effects
+
+
+def _video_pieces(output):
+    """Split retained segments at freeze boundaries exactly as MP4 rendering does."""
+    from .render import _render_pieces
+
+    pieces = _render_pieces(output)
+    freezes = {}
+    for effect in output.get("effects", []):
+        start, end = effect["target_start_us"], effect["target_start_us"] + effect["duration_us"]
+        for piece in pieces:
+            if start <= piece["target_start_us"] < end:
+                freezes[piece["target_start_us"]] = effect["item_id"]
+    for piece in pieces:
+        if "frame_time_us" in piece:
+            piece["freeze_item_id"] = freezes[piece["target_start_us"]]
+    return pieces
+
+
+PNG_SIGNATURE = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
+
+def _png_size(path):
+    with open(path, "rb") as stream:
+        header = stream.read(24)
+    if len(header) < 24 or header[:8] != PNG_SIGNATURE or header[12:16] != b"IHDR":
+        raise SlicingError("Freeze frame image is not a PNG file")
+    return struct.unpack(">II", header[16:24])
+
+
 def _source_ids(output):
     return set(row["source_id"] for row in output["segments"]) | set(
         row["source_id"] for row in output.get("edits", [])
@@ -67,8 +109,8 @@ def validate_saved_draft(draft_path, plan, output_id, *, declared_root=None) -> 
     draft_path = Path(draft_path).resolve()
     declared_root = Path(declared_root or draft_path).resolve()
     output = _output(plan, output_id)
-    if output.get("effects"):
-        raise SlicingError("MP4-only effects are not supported in editable draft output")
+    effects = _draft_effects(plan, output)
+    pieces = _video_pieces(output)
     duration = int(output["duration_us"])
     if duration <= 0 or not output.get("segments"):
         raise SlicingError("Cannot accept an empty editable draft")
@@ -130,7 +172,59 @@ def validate_saved_draft(draft_path, plan, output_id, *, declared_root=None) -> 
                 audio_us = round(stream.getnframes() * 1_000_000 / stream.getframerate())
             if abs(audio_us - int(source["duration_us"])) > 100_000:
                 raise SlicingError("Separated audio does not cover the full source duration")
-    for track, expected, media_key in [(videos[0], output["segments"], "video_path")] + (
+    freeze_rows = receipt.get("freeze_frames", [])
+    if [row.get("item_id") for row in freeze_rows] != [row["item_id"] for row in effects]:
+        raise SlicingError("Freeze frame receipts differ from the planned effects")
+    freeze_images = {}
+    for row, effect in zip(freeze_rows, effects):
+        if (
+            row.get("source_id") != effect["source_id"]
+            or row.get("frame_time_us") != effect["frame_time_us"]
+            or row.get("target_start_us") != effect["target_start_us"]
+            or row.get("duration_us") != effect["duration_us"]
+        ):
+            raise SlicingError("Freeze frame receipt differs from its planned effect")
+        image = _material_path(row.get("image_path", ""), declared_root, draft_path)
+        if file_sha256(image) != row.get("image_sha256"):
+            raise SlicingError("Freeze frame image changed after draft writing")
+        source = plan["sources"][effect["source_id"]]
+        if _png_size(image) != (int(source["width"]), int(source["height"])):
+            raise SlicingError("Freeze frame image size differs from its source picture")
+        freeze_images[effect["item_id"]] = row["image_path"]
+    video_segments = videos[0].get("segments", [])
+    if len(video_segments) != len(pieces):
+        raise SlicingError("Saved cut count differs from the source-aligned plan")
+    if videos[0].get("attribute", 0) & 3:
+        raise SlicingError("Main editable media track is hidden or muted")
+    for segment, piece in zip(video_segments, pieces):
+        frozen = "frame_time_us" in piece
+        source_range = {
+            "start": 0 if frozen else piece["source_start_us"],
+            "duration": piece["duration_us"],
+        }
+        target_range = {"start": piece["target_start_us"], "duration": piece["duration_us"]}
+        if (
+            segment.get("source_timerange") != source_range
+            or segment.get("target_timerange") != target_range
+        ):
+            raise SlicingError("Saved source/target ranges differ from the planned edit")
+        material = materials.get(segment.get("material_id"), {})
+        expected_path = (
+            freeze_images[piece["freeze_item_id"]]
+            if frozen
+            else local_rows[piece["source_id"]]["video_path"]
+        )
+        if material.get("path") != expected_path or (material.get("type") == "photo") != frozen:
+            raise SlicingError("Saved segment references the wrong complete local source")
+        _material_path(material["path"], declared_root, draft_path)
+        if float(segment.get("speed", 1.0)) != 1.0:
+            raise SlicingError("Draft unexpectedly changes source playback speed")
+        expected_volume = (
+            0.0 if frozen or plan["sources"][piece["source_id"]].get("has_audio") else 1.0
+        )
+        if float(segment.get("volume", 1.0)) != expected_volume:
+            raise SlicingError("Saved source voice is muted or duplicated")
+    for track, expected, media_key in (
         [(audios[0], expected_audio, "audio_path")] if audios else []
     ):
         segments = track.get("segments", [])
@@ -190,7 +284,8 @@ def validate_saved_draft(draft_path, plan, output_id, *, declared_root=None) -> 
         "status": "pass",
         "acceptance": "development_structural",
         "duration_us": duration,
-        "video_segment_count": len(output["segments"]),
+        "video_segment_count": len(pieces),
+        "freeze_frame_count": len(effects),
         "audio_segment_count": len(expected_audio),
         "marker_count": len(markers),
         "source_count": len(used),
@@ -204,8 +299,7 @@ def write_draft(plan, output_id, drafts_root, *, config=None) -> dict:
     from .media import verify_sources
 
     output = _output(plan, output_id)
-    if output.get("effects"):
-        raise SlicingError("MP4-only effects are not supported in editable draft output")
+    _draft_effects(plan, output)
     verify_sources(plan)
     name = str(output.get("name") or output_id)
     if (

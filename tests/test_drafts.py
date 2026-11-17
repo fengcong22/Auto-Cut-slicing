@@ -3,7 +3,9 @@ import json
 import subprocess
 import sys
 import types
+import struct
 import wave
+import zlib
 
 import pytest
 
@@ -227,7 +229,7 @@ def test_write_refuses_existing_destination_without_worker(saved_draft, monkeypa
         write_draft(plan, "out", root.parent)
 
 
-@pytest.mark.parametrize("kind", ["mute", "freeze_frame"])
+@pytest.mark.parametrize("kind", ["mute", "mute_word", "unknown"])
 def test_draft_rejects_mp4_effects_before_creating_directory_or_loading_runtime(
     saved_draft, monkeypatch, kind
 ):
@@ -369,3 +371,114 @@ def test_transcription_binds_source_and_alignment_audio_without_network(
         assert result["model"] == "bigmodel"
         assert result["resource_id"] == "volc.bigasr.auc"
         assert result["service_job_id"] == "mock-service-job"
+
+
+def _png(path, width, height):
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(
+            ">I", zlib.crc32(kind + data) & 0xFFFFFFFF
+        )
+
+    raw = b"".join(bytes(1) + bytes(3 * width) for _ in range(height))
+    path.write_bytes(
+        bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+@pytest.fixture
+def frozen_draft(saved_draft):
+    """Seam freeze inside the second retained segment: target 300-400 ms."""
+    root, plan, content = saved_draft
+    output = plan["outputs"][0]
+    output["effects"] = [{
+        "kind": "freeze_frame", "item_id": "c1/freeze", "clip_id": "c1", "source_id": "src",
+        "source_text": "停顿期间保持前一段末帧", "source_start_us": 700_000,
+        "source_end_us": 800_000, "target_start_us": 300_000, "duration_us": 100_000,
+        "frame_time_us": 650_000,
+    }]
+    image = root / "Resources" / "local" / "freeze_001.png"
+    _png(image, 320, 180)
+    content["materials"]["videos"].append({"id": "p", "path": str(image), "type": "photo"})
+    video = content["tracks"][0]["segments"]
+    tail = copy.deepcopy(video[1])
+    still = copy.deepcopy(video[1])
+    video[1]["source_timerange"] = {"start": 600_000, "duration": 100_000}
+    video[1]["target_timerange"] = {"start": 200_000, "duration": 100_000}
+    still.update({"id": "still", "material_id": "p"})
+    still["source_timerange"] = {"start": 0, "duration": 100_000}
+    still["target_timerange"] = {"start": 300_000, "duration": 100_000}
+    tail["id"] = "tail"
+    tail["source_timerange"] = {"start": 800_000, "duration": 200_000}
+    tail["target_timerange"] = {"start": 400_000, "duration": 200_000}
+    video[2:] = [still, tail]
+    _save_both(root, content)
+    receipt = read_json(root / "edit_receipts.json")
+    receipt["plan_sha256"] = json_sha256(plan)
+    receipt["freeze_frames"] = [{
+        "item_id": "c1/freeze", "source_id": "src", "frame_time_us": 650_000,
+        "target_start_us": 300_000, "duration_us": 100_000,
+        "image_path": str(image), "image_sha256": file_sha256(image),
+    }]
+    write_json(root / "edit_receipts.json", receipt)
+    return root, plan, content, image
+
+
+def test_saved_draft_places_freeze_still_on_video_while_voice_continues(frozen_draft):
+    root, plan, content, _ = frozen_draft
+    result = validate_saved_draft(root, plan, "out")
+    assert result["video_segment_count"] == 4
+    assert result["audio_segment_count"] == 2
+    assert result["freeze_frame_count"] == 1
+    audio = content["tracks"][1]["segments"][1]
+    assert audio["source_timerange"] == {"start": 600_000, "duration": 400_000}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_still",
+        "still_as_video",
+        "still_shifted",
+        "image_tampered",
+        "image_size",
+        "receipt_frame",
+        "receipt_missing",
+        "voice_split",
+    ],
+)
+def test_saved_freeze_draft_rejects_regressions(frozen_draft, change):
+    root, plan, content, image = frozen_draft
+    video = content["tracks"][0]["segments"]
+    receipt = read_json(root / "edit_receipts.json")
+    if change == "missing_still":
+        video.pop(2)
+    elif change == "still_as_video":
+        video[2]["material_id"] = "v"
+    elif change == "still_shifted":
+        video[2]["target_timerange"]["start"] += 40_000
+    elif change == "image_tampered":
+        image.write_bytes(image.read_bytes() + b"x")
+    elif change == "image_size":
+        _png(image, 160, 90)
+        receipt["freeze_frames"][0]["image_sha256"] = file_sha256(image)
+    elif change == "receipt_frame":
+        receipt["freeze_frames"][0]["frame_time_us"] = 600_000
+    elif change == "receipt_missing":
+        receipt["freeze_frames"] = []
+    elif change == "voice_split":
+        content["tracks"][1]["segments"][1]["source_timerange"]["duration"] = 100_000
+    _save_both(root, content)
+    write_json(root / "edit_receipts.json", receipt)
+    with pytest.raises(SlicingError):
+        validate_saved_draft(root, plan, "out")
+
+
+def test_draft_rejects_freeze_not_covered_by_retained_range(frozen_draft):
+    root, plan, _, _ = frozen_draft
+    plan["outputs"][0]["effects"][0]["source_start_us"] = 100_000
+    plan["outputs"][0]["effects"][0]["source_end_us"] = 200_000
+    with pytest.raises(SlicingError, match="retained source"):
+        validate_saved_draft(root, plan, "out")

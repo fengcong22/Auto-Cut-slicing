@@ -222,3 +222,52 @@ def extract_source_audio(path: str | Path, output: str | Path) -> Path:
         except OSError as exc:
             raise SlicingError(f"Could not atomically publish source audio: {exc}") from exc
     return destination
+
+
+def extract_freeze_frame(path: str | Path, frame_time_us: int, output: str | Path) -> Path:
+    """Export the source frame displayed at ``frame_time_us`` as a PNG.
+
+    Selection matches MP4 freeze rendering: seek without accurate trimming, keep
+    frames up to the requested instant and take the last one.
+    """
+    source = Path(path).expanduser().resolve()
+    destination = Path(output).expanduser().absolute()
+    if os.path.lexists(destination):
+        raise SlicingError(f"Refusing to overwrite existing freeze frame: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".slicing-frame-", dir=destination.parent) as work:
+        temporary = Path(work) / "frame.png"
+        _run(
+            [
+                find_tool("ffmpeg"),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-n",
+                "-noaccurate_seek",
+                "-ss",
+                f"{frame_time_us / 1_000_000:.6f}",
+                "-i",
+                str(source),
+                "-filter_complex",
+                "[0:v:0]trim=end_pts=1,reverse,trim=end_frame=1,setpts=PTS-STARTPTS[v]",
+                "-map",
+                "[v]",
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "rgb24",
+                "-c:v",
+                "png",
+                str(temporary),
+            ],
+            purpose="Freeze frame extraction",
+        )
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            raise SlicingError("Freeze frame extraction produced no picture")
+        try:
+            os.link(temporary, destination)
+        except OSError as exc:
+            raise SlicingError(f"Could not publish freeze frame: {exc}") from exc
+    return destination
