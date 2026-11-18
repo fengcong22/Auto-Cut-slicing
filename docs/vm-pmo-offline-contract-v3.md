@@ -43,8 +43,22 @@ v3 让 Taskboard 启动的 AI 按工作流写出 `edit-intent.json`，由包校�
 - `instructions` 允许多条，各自 `instruction_id` 唯一；每条都要被意图覆盖。
   `must_keep` 与 `visual_evidence` 字段沿用 v2。
 - 新增可选 `prior_rounds`：历史轮次的意见快照，只读，用于理解上下文，不作为本轮要执行的意见。
+  Taskboard 在审核轮填写以往各轮（初稿及更早的审核轮）的原意见，按时间从早到晚排列。
 - 新增 `ai_session`：`{agent, model, session_id}`，由 Taskboard 填写，写入回执。
 - `manual_revision` 沿用 v2 语义，与 `planning_mode: "ai_intent"` 互斥。
+
+## 审核截图（`interface.inputs: ["review_images"]`）
+
+manifest 在 `interface.inputs` 中声明 `review_images`，表示本包的 v3 AI 规划接受审核截图作为意见的一部分。
+Taskboard 只在包作了这个声明时，才登记审核意见附件字段里带截图的审核轮；未声明时仍以
+`VM_REVIEW_IMAGES_UNSUPPORTED` 阻断，不忽略截图继续。
+
+- 截图只交给第 2 步的 AI 会话（作为图片附件，并在提示中列出本机路径），用来理解意见指的是哪里。
+  它不进入 `input.json`，`plan` / `render` / `qa` 不读取截图，计划哈希与截图无关。
+- 截图不是时间来源：时间与画面仍须用证据命令（`evidence frames` 等）对本轮源视频取证，
+  不能凭截图估计时间。截图与源画面对不上或看不出指哪里时，按“不确定就阻断”写 `blocked` 意图。
+- 文件由 Taskboard 下载到运行目录之外（AI 不可写），并记录 SHA-256；只接受图片类型、单张不超过 20 MB、最多 10 张。
+- `rule` 规划（结构化人工返修）不使用截图。
 
 ## Context（相对 v2 新增）
 
