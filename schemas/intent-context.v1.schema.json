@@ -34,7 +34,20 @@
         "properties": {
           "instruction_id": {"$ref": "#/$defs/id"},
           "raw_text": {"type": "string", "minLength": 1},
-          "must_keep": {"type": "array", "items": {"type": "string", "minLength": 1}}
+          "must_keep": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "time_map": {
+            "description": "Feedback written on a reviewed cut: its segments map cut time (target) to source time.",
+            "type": "array", "minItems": 1,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["source_start_us", "duration_us", "target_start_us"],
+              "properties": {
+                "source_start_us": {"type": "integer", "minimum": 0},
+                "duration_us": {"type": "integer", "minimum": 1},
+                "target_start_us": {"type": "integer", "minimum": 0}
+              }
+            }
+          }
         }
       }
     },

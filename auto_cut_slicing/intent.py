@@ -103,6 +103,19 @@ def parse_ordinal(text: str) -> tuple[int, bool]:
     raise SlicingError(f"Cannot parse an ordinal from {text!r}")
 
 
+def map_cut_time(segments, cut_us: int) -> int | None:
+    """Source time of a time on a reviewed cut. A time on a join belongs to the segment that starts there;
+    the end of the cut maps to the end of its last segment."""
+    for segment in segments:
+        start = segment["target_start_us"]
+        if start <= cut_us < start + segment["duration_us"]:
+            return segment["source_start_us"] + cut_us - start
+    last = segments[-1]
+    if cut_us == last["target_start_us"] + last["duration_us"]:
+        return last["source_start_us"] + last["duration_us"]
+    return None
+
+
 def _sec(us: int) -> int | float:
     return us // 1_000_000 if us % 1_000_000 == 0 else us / 1_000_000
 
@@ -235,6 +248,15 @@ class _Checker:
             except SlicingError as error:
                 self.add("V07", "INTENT_TIME_UNSOURCED", str(error), path)
                 return None
+            time_map = self.context.instructions.get(ref["span"]["instruction_id"], {}).get("time_map")
+            if time_map:
+                # Feedback on a reviewed cut: the written time is on that cut, value_us is the source time.
+                mapped = map_cut_time(time_map, parsed)
+                if mapped is None:
+                    self.add("V07", "INTENT_TIME_UNSOURCED",
+                             f"{text!r} ({parsed}us) is outside the reviewed cut", path)
+                    return None
+                parsed = mapped
             if parsed != value:
                 self.add("V07", "INTENT_TIME_UNSOURCED", f"{text!r} is {parsed}us, not {value}us", path)
                 return None

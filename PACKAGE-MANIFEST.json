@@ -6,6 +6,6 @@
     "contract": { "id": "vm_pmo_review_video", "version": 3 },
     "driverId": "vm_pmo_review_video_v3",
     "artifactKind": "review_mp4",
-    "inputs": ["review_images"]
+    "inputs": ["review_images", "review_original_source"]
   }
 }

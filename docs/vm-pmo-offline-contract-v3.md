@@ -60,6 +60,24 @@ Taskboard 只在包作了这个声明时，才登记审核意见附件字段里�
 - 文件由 Taskboard 下载到运行目录之外（AI 不可写），并记录 SHA-256；只接受图片类型、单张不超过 20 MB、最多 10 张。
 - `rule` 规划（结构化人工返修）不使用截图。
 
+## 审核轮回到原片（`interface.inputs: ["review_original_source"]`）
+
+v2 的审核轮以上一轮成片为源，成片里没有的内容（上一轮剪掉的话、更早的开头）无法恢复。
+manifest 声明 `review_original_source` 后，Taskboard 可以让 `ai_intent` 审核轮在**原 VM 素材**上重新规划整条视频：
+
+- `review_round.source_basis: "vm_original"`；`source` 是原 VM 素材（`timeline_basis: "vm_original"`）。
+  `review_round.parent` 仍描述上一轮已交付的成片，但不再要求与 `source` 哈希一致。只允许 `ai_intent`。
+- `instructions` 包含**全部轮次**的意见，每条都要被意图覆盖：
+  - 初稿意见：`timeline_basis: "vm_original"`，`applicability: "carried_over"`；
+  - 每轮审核意见：`timeline_basis: "previous_review_video"` 并带 `time_map_id`；本轮的为 `current_round`，更早的为 `carried_over`。
+  - 后一轮意见与前一轮冲突时以后一轮为准，被取代的部分在覆盖表中写 `context` 并说明。
+- `time_maps`：`[{time_map_id, plan_sha256, segments: [{source_start_us, duration_us, target_start_us}]}]`，
+  即审核人当时看的那一稿的计划片段表（成片时间 → 原片时间），片段须首尾相接、落在原片内。
+- intent-context 中这些意见带 `time_map`。意图里 `user_anchor` 的 `value_us` 写**原片时间**：
+  validator 先解析意见中的成片时间，再按该意见的片段表换算后比对；正好落在接缝上的时间属于从该处开始的片段，
+  成片末尾对应最后一段的末尾；落在成片之外即 `INTENT_TIME_UNSOURCED`。
+- 多条意见时固定句式交叉核对为 `not_applicable`。上一轮的 `edit-intent.json` 已在原片时间轴上，可作为本轮起点修改。
+
 ## Context（相对 v2 新增）
 
 | 字段 | 说明 |

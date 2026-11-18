@@ -52,6 +52,7 @@
 | Taskboard 自动入口携带意图 | **未接入**。Taskboard 还没有 v3 driver 和启动 AI 的步骤，生产仍走 v2 固定句式或 `manual_revision` |
 | AI 在 Taskboard 中看图 | **未验证**。在验证前，画面判断一律交给审批环节由人复核 |
 | 审核截图 | 已接入：manifest 声明 `interface.inputs: ["review_images"]` 后，Taskboard 把审核截图作为图片附给第 2 步的 AI 会话，用于理解意见位置；截图不是时间来源，见 [v3](vm-pmo-offline-contract-v3.md#审核截图interfaceinputs-review_images) |
+| 审核轮回到原片 | 已实现：manifest 声明 `review_original_source` 后，审核轮在原片上重新规划整条视频并覆盖全部轮次意见；审核意见中的时间按该稿片段表换算成原片时间，见 [v3](vm-pmo-offline-contract-v3.md#审核轮回到原片interfaceinputs-review_original_source) |
 | 审核轮续接对话 | Taskboard 在审核轮用 `codex exec resume` 接回上一轮的同一 AI 会话，提示中给出上一轮运行目录（只读）和新的运行目录；无法续接时新开会话 |
 
 ## 步骤
