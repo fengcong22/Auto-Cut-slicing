@@ -161,7 +161,7 @@ def _validate_input(input_data):
     optional = {'manual_revision'}
     if version == 3:
         required = required | {'planning_mode'}
-        optional = optional | {'prior_rounds', 'ai_session'}
+        optional = optional | {'prior_rounds', 'ai_session', 'time_maps'}
     if not isinstance(input_data, dict) or not required <= set(input_data) or (
         set(input_data) - required - optional
     ):
@@ -188,7 +188,15 @@ def _validate_input(input_data):
     record = _object(input_data['record'], ('base_token', 'table_id', 'record_id'), 'record')
     for key, value in record.items():
         _id(value, f'record.{key}')
-    review = _object(input_data['review_round'], ('round_id', 'input_snapshot_id', 'parent'), 'review_round')
+    review_keys = ('round_id', 'input_snapshot_id', 'parent')
+    raw_review = input_data['review_round']
+    if version == 3 and isinstance(raw_review, dict) and 'source_basis' in raw_review:
+        review_keys = review_keys + ('source_basis',)
+    review = _object(raw_review, review_keys, 'review_round')
+    # A rebased review re-plans the whole round on the original VM source (see the v3 contract).
+    rebased = review.get('source_basis') == 'vm_original'
+    if 'source_basis' in review and not rebased:
+        raise VmError('INVALID_INPUT', 'review_round.source_basis must be vm_original')
     _id(review['round_id'], 'review_round.round_id')
     _id(review['input_snapshot_id'], 'review_round.input_snapshot_id')
     source = _object(input_data['source'], ('source_id', 'timeline_basis', 'vmid',
@@ -213,12 +221,18 @@ def _validate_input(input_data):
         _hash(parent['sha256'], 'review parent.sha256')
         _positive_int(parent['bytes'], 'review parent.bytes')
         _positive_int(parent['duration_ms'], 'review parent.duration_ms')
-        if parent['run_id'] == binding['run_id'] or any(
+        if parent['run_id'] == binding['run_id'] or not rebased and any(
             parent[key] != source[source_key]
             for key, source_key in (('sha256', 'sha256'), ('bytes', 'bytes'),
                                     ('duration_ms', 'duration_ms'))
         ):
             raise VmError('UNSUPPORTED_ROUND', 'Review source does not match its frozen parent')
+        if rebased:
+            if input_data.get('planning_mode') != 'ai_intent':
+                raise VmError('UNSUPPORTED_ROUND', 'A review on the original source requires ai_intent planning')
+            expected_timeline = 'vm_original'
+    elif rebased:
+        raise VmError('UNSUPPORTED_ROUND', 'Only review rounds may be rebased on the original source')
     elif review['parent'] is not None:
         raise VmError('UNSUPPORTED_ROUND', 'Initial rounds must not have a parent')
     if source['timeline_basis'] != expected_timeline:
@@ -231,6 +245,9 @@ def _validate_input(input_data):
         raise VmError('UNSUPPORTED_PROFILE', 'Output profile must be review_mp4_v1, 1080p25 with preserved audio')
     target = _object(input_data['delivery_target'], ('attachment_field_id',), 'delivery_target')
     _id(target['attachment_field_id'], 'delivery_target.attachment_field_id')
+    time_maps = _time_maps(input_data, source) if rebased else {}
+    if not rebased and 'time_maps' in input_data:
+        raise VmError('INVALID_INPUT', 'time_maps are only used by reviews on the original source')
     instructions = input_data['instructions']
     if not isinstance(instructions, list) or not instructions:
         raise VmError('INVALID_INPUT', 'instructions must be a nonempty list')
@@ -240,6 +257,8 @@ def _validate_input(input_data):
                                       'timeline_basis', 'applicability']
         if version >= 2:
             allowed_instruction_fields.extend(['visual_evidence', 'must_keep'])
+        if rebased:
+            allowed_instruction_fields.append('time_map_id')
         required_instruction_fields = ['instruction_id', 'source_field_id', 'raw_text',
                                        'timeline_basis', 'applicability']
         if not isinstance(item, dict) or set(item) - set(allowed_instruction_fields) or any(
@@ -253,7 +272,15 @@ def _validate_input(input_data):
         _id(item['source_field_id'], 'instruction.source_field_id')
         if not isinstance(item['raw_text'], str) or not item['raw_text'].strip():
             raise VmError('INVALID_INPUT', 'instruction.raw_text must be nonempty')
-        if item['timeline_basis'] != expected_timeline or item['applicability'] != 'current_round':
+        if rebased:
+            # Earlier rounds' feedback is re-applied; review feedback quotes times on the cut it reviewed.
+            if item['applicability'] not in ('current_round', 'carried_over') or (
+                item['timeline_basis'] == 'vm_original' and 'time_map_id' in item
+            ) or (item['timeline_basis'] == 'previous_review_video'
+                  and item.get('time_map_id') not in time_maps) or item['timeline_basis'] not in (
+                'vm_original', 'previous_review_video'):
+                raise VmError('UNSUPPORTED_INSTRUCTION', 'Instruction timeline or time map is invalid')
+        elif item['timeline_basis'] != expected_timeline or item['applicability'] != 'current_round':
             raise VmError('UNSUPPORTED_INSTRUCTION', 'Instruction timeline must match the current workflow stage')
         if 'visual_evidence' in item:
             evidence = _object(item['visual_evidence'], ('source_sha256', 'frame_time', 'end'),
@@ -266,6 +293,33 @@ def _validate_input(input_data):
             raise VmError('INVALID_INPUT', 'must_keep must be a list of nonempty phrases')
     if 'manual_revision' in input_data:
         _manual_revision_clips(input_data)
+
+
+def _time_maps(input_data, source):
+    """Segment tables of the cuts reviewers watched: target (cut) time -> original source time."""
+    rows = input_data.get('time_maps')
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 20:
+        raise VmError('INVALID_INPUT', 'A review on the original source requires 1-20 time_maps')
+    maps = {}
+    limit = source['duration_ms'] * 1000
+    for row in rows:
+        row = _object(row, ('time_map_id', 'plan_sha256', 'segments'), 'time map')
+        map_id = _id(row['time_map_id'], 'time_map.time_map_id')
+        _hash(row['plan_sha256'], 'time_map.plan_sha256')
+        segments = row['segments']
+        if map_id in maps or not isinstance(segments, list) or not 1 <= len(segments) <= 500:
+            raise VmError('INVALID_INPUT', 'time map ids must be unique with 1-500 segments')
+        offset = 0
+        for segment in segments:
+            segment = _object(segment, ('source_start_us', 'duration_us', 'target_start_us'), 'time map segment')
+            if (type(segment['source_start_us']) is not int or segment['source_start_us'] < 0
+                    or type(segment['duration_us']) is not int or segment['duration_us'] < 1
+                    or segment['source_start_us'] + segment['duration_us'] > limit
+                    or segment['target_start_us'] != offset):
+                raise VmError('INVALID_INPUT', 'time map segments must be contiguous and inside the source')
+            offset += segment['duration_us']
+        maps[map_id] = segments
+    return maps
 
 
 def _validate_v3_fields(input_data):
@@ -657,6 +711,9 @@ def _intent_context_data(input_data, paths, alignment_path):
         row = {'instruction_id': item['instruction_id'], 'raw_text': item['raw_text']}
         if 'must_keep' in item:
             row['must_keep'] = list(item['must_keep'])
+        if 'time_map_id' in item:
+            maps = {entry['time_map_id']: entry['segments'] for entry in input_data['time_maps']}
+            row['time_map'] = [dict(segment) for segment in maps[item['time_map_id']]]
         instructions.append(row)
     return {
         'schema': 'auto-cut-slicing/intent-context', 'schema_version': 1,
@@ -752,7 +809,8 @@ def _edit_signature(output):
 def _cross_check_rule(input_data, paths, descriptor, alignment_path, output):
     """When the fixed-pattern parser also understands the feedback, both must agree."""
     if len(input_data['instructions']) != 1:
-        return None
+        # The fixed patterns read one instruction; several (e.g. a rebased review) cannot be cross-checked.
+        return 'not_applicable'
     try:
         clips = _parse_review_clips(input_data, descriptor)
         rule = _review_engine_plan(input_data, paths['source_path'], descriptor, clips,

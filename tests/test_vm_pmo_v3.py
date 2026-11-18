@@ -410,3 +410,82 @@ def test_qa_reverse_asr_transcribes_the_rendered_mp4(v3, monkeypatch):
     assert [row["sha256"] for row in seen] == [output_sha]
     assert seen[0]["path"] == v3["context"]["output_path"]
     assert (v3["run_dir"] / "output.words.json").is_file()
+
+
+REVIEW = "结尾截到0:04.40"
+# The draft kept 0-3.3 s and 4.0-5.6 s, so 0:04.40 on the draft is 5.1 s in the original.
+DRAFT_MAP = [{"source_start_us": 0, "duration_us": 3_300_000, "target_start_us": 0},
+             {"source_start_us": 4_000_000, "duration_us": 1_600_000, "target_start_us": 3_300_000}]
+
+
+def rebase(case):
+    data = case["input"]
+    data["binding"]["stage_id"] = "review"
+    data["review_round"] = {**data["review_round"], "source_basis": "vm_original",
+                            "parent": {"kind": "managed_run", "run_id": "run-0", "artifact_id": "artifact-0",
+                                       "delivery_id": "delivery-0", "sha256": "e" * 64, "bytes": 10,
+                                       "duration_ms": 4900}}
+    data["instructions"][0]["applicability"] = "carried_over"
+    data["instructions"].append({"instruction_id": "instruction-2", "source_field_id": "field-2",
+                                 "raw_text": REVIEW, "timeline_basis": "previous_review_video",
+                                 "applicability": "current_round", "time_map_id": "draft-1"})
+    data["time_maps"] = [{"time_map_id": "draft-1", "plan_sha256": "f" * 64, "segments": DRAFT_MAP}]
+    save(case)
+
+
+def rebased_intent(case, end_us=5_100_000):
+    value = intent(case)
+    review_span = {"instruction_id": "instruction-2", "start": REVIEW.index("0:04.40"),
+                   "end": REVIEW.index("0:04.40") + len("0:04.40")}
+    value["instructions"].append({"instruction_id": "instruction-2", "raw_text": REVIEW,
+                                  "raw_text_sha256": hashlib.sha256(REVIEW.encode()).hexdigest()})
+    clip = value["outputs"][0]["clips"][0]
+    clip["covers"].append(review_span)
+    clip["end"] = {"mode": "time", "at": {"ref": "user_anchor", "value_us": end_us, "span": review_span}}
+    value["coverage"][0]["reason"] = "保留范围起点；终点由第 2 轮意见取代"
+    value["coverage"].append({"span": {"instruction_id": "instruction-2", "start": 0, "end": len(REVIEW)},
+                              "quote": REVIEW, "disposition": "operation", "intent_ids": ["clip-1"],
+                              "reason": "审核稿 0:04.40 换算到原片 5.10s"})
+    value["outputs"][0]["clips"][0]["operations"][0]["phrase"]["selection"]["scope_end_us"] = end_us
+    return value
+
+
+def test_review_on_original_source_maps_cut_times_and_reapplies_earlier_feedback(v3):
+    rebase(v3)
+    assert analyze(v3)["status"] == "ready"
+    context = read_json(v3["context"]["intent_context_path"])
+    assert context["timeline_basis"] == "vm_original"
+    assert context["instructions"][1]["time_map"] == DRAFT_MAP
+    write_intent(v3, rebased_intent(v3))
+    receipt = plan(v3)
+    assert receipt["status"] == "ready", receipt
+    saved = read_json(v3["context"]["plan_path"])
+    assert saved["expected_duration_ms"] == 4_400
+    assert [row["instruction_id"] for row in saved["instruction_results"]] == ["instruction-1", "instruction-2"]
+    assert saved["rule_cross_check"] == "not_applicable"
+    rendered = vm_pmo.render_command(v3["input_path"], v3["context_path"], Path(v3["context"]["plan_path"]))
+    assert rendered["status"] == "rendered", rendered["error"]
+
+
+def test_review_on_original_source_rejects_an_unmapped_cut_time(v3):
+    rebase(v3)
+    assert analyze(v3)["status"] == "ready"
+    write_intent(v3, rebased_intent(v3, end_us=4_400_000))
+    receipt = plan(v3)
+    assert receipt["status"] == "blocked"
+    assert any(row.get("rule") == "V07" for row in receipt["blockers"]), receipt["blockers"]
+
+
+@pytest.mark.parametrize("change", [
+    lambda data: data.update(planning_mode="rule", ai_session=None) or data.pop("ai_session"),
+    lambda data: data["time_maps"][0]["segments"][1].update(target_start_us=1),
+    lambda data: data["instructions"][1].pop("time_map_id"),
+    lambda data: data.pop("time_maps"),
+    lambda data: data["review_round"].update(source_basis="previous_review_video"),
+])
+def test_review_on_original_source_rejects_invalid_requests(v3, change):
+    rebase(v3)
+    change(v3["input"])
+    save(v3)
+    with pytest.raises(vm_pmo.VmError):
+        vm_pmo._validate_input(read_json(v3["input_path"]))
