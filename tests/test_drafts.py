@@ -1,9 +1,9 @@
 import copy
 import json
+import struct
 import subprocess
 import sys
 import types
-import struct
 import wave
 import zlib
 

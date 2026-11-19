@@ -142,10 +142,18 @@
 | `opening_frame` / `seam_frames` / `freeze_frames`：画面无残留、无闪回 | 查看导出的帧（定格另导出最后一帧和恢复播放第一帧） | `ai_reviewed` / `needs_human` / `failed` |
 | `seam_pause_picture`：接缝停顿期间仍是前一段画面，且后段从画面开始动的那一帧切入 | 停顿区间逐帧与前一段末帧比较（峰值，不只看均值，小面积转场也能抓住）；另测后段源里画面开始动的第一帧 | `passed` / `failed` / `needs_human` / `not_run` |
 | `mute_silence`：静音区间确实无声 | 测量成片该区间的音频电平，阈值 −60 dBFS，不需要 ASR | `passed` / `failed` / `not_run` |
+| `frame_count`：成片帧数与计划一致 | ffprobe 逐帧时间戳，与计划时长×帧率对照 | `passed` / `failed` |
+| `frame_timing`：帧间隔均匀 | 相邻帧时间戳之差与该帧率的名义间隔对照 | `passed` / `failed` |
+| `black_frames`：没有黑场 | 逐帧亮度在 64×36 灰度代理上测量 | `passed` / `failed` |
+| `blurred_frames`：没有糊到不可用的帧 | 拉普拉斯方差，排除黑场后统计 | `passed` / `failed` |
+| `luma_flashes`：没有非计划的亮度突变 | 相邻帧亮度差；计划接缝和定格边界附近不计 | `passed` / `failed` |
+| `still_frames`：静帧只出现在计划的定格区间 | 逐帧像素签名（32×18 采样）比较，相邻定格区间先合并 | `passed` / `failed` |
+| `speech_present`：成片有语音 | 成片反向 ASR | `passed` / `failed` / `not_run` |
 | `unlisted_change`：没有意见之外的改动 | 计划操作与覆盖表对照 | `passed` / `failed` |
 | `listening` / `pacing`：听感与节奏 | 只能由人完成 | `needs_human` / `not_run` / `failed` |
 
 - 反向 ASR 只是一种证据：识别错误可能造成假阳性或假阴性，`failed` 时先回听确认再改。
+- 上表 `frame_count` 到 `still_frames` 是直接检查成片文件的机械项，不依赖 ASR 或主观判断，能抓住跳帧、丢帧、黑场、意外静帧和画面糊掉。它们只判断“这帧是否可用”，不判断内容对不对。
 - `seam_pause_picture` 标 `needs_human` 是因为像素分不清两种情况：定格盖住的运动帧可能还露着前一主题（转场没盖完，该继续定格），也可能转场已经播完（定格过头，该提前切入）。检查会把运动起点到起音之间的帧导出，由人确认切入点是旧内容刚被盖住的那一帧。
 - `overall` 只有 `failed` 和 `ready_for_review` 两种，没有“已验收”。
 - `qa.json` 中的 `listening` / `pacing` 不能标为 `passed`。人工试听的结论记在
