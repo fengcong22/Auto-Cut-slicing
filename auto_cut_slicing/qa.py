@@ -108,13 +108,20 @@ def _frame_timestamps(video: Path) -> list[int]:
     return sorted(stamps)
 
 
-def _frame_stats(video: Path) -> list[tuple[float, float, bytes]]:
-    """Per-frame (mean luma, Laplacian variance, 32x18 signature) in decode order."""
+def _frame_stats(video: Path, *, start_us: int | None = None, duration_us: int | None = None,
+                 fps: Fraction | None = None) -> list[tuple[float, float, bytes]]:
+    """Per-frame (mean luma, Laplacian variance, 32x18 signature) in decode order.
+
+    With a range and a rate, the frames of that stretch resampled to the rate: what a render of it shows.
+    """
     from .media import find_tool
 
+    seek = [] if start_us is None else [
+        "-ss", f"{start_us / 1_000_000:.6f}", "-t", f"{duration_us / 1_000_000:.6f}"]
+    rate = "" if fps is None else f"fps={fps.numerator}/{fps.denominator},"
     result = subprocess.run(
-        [find_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(video),
-         "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "-"],
+        [find_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin", *seek, "-i", str(video),
+         "-vf", f"{rate}scale=64:36,format=gray", "-f", "rawvideo", "-"],
         check=True, capture_output=True,
     )
     size = 64 * 36
@@ -138,7 +145,7 @@ def _frame_stats(video: Path) -> list[tuple[float, float, bytes]]:
     return stats
 
 
-def _mechanical_picture_checks(rows, output, video, video_asr=None):
+def _mechanical_picture_checks(rows, output, video, video_asr=None, context=None):
     """Deterministic picture checks on the rendered file itself.
 
     These compare the file with the plan and look for frames that cannot be intended — missing or
@@ -189,7 +196,7 @@ def _mechanical_picture_checks(rows, output, video, video_asr=None):
                f"{len(flashes)} unexplained luma jumps between adjacent frames; first at frame {flashes[0]}"
                if flashes else "No unexplained brightness jumps",
                start=stamps[flashes[0]] if flashes and flashes[0] < len(stamps) else 0)
-        _held_frames(rows, output, stats, stamps, expected_fps)
+        _held_frames(rows, output, stats, stamps, expected_fps, context)
     if video_asr is not None:
         _check(rows, "speech", "speech_present", "passed", "automatic",
                "Output speech was transcribed (--video-asr); the comparison is in the phrase checks.")
@@ -229,8 +236,38 @@ def _same_frame(first: bytes, second: bytes) -> bool:
     return close >= len(first) * 0.995
 
 
-def _held_frames(rows, output, stats, stamps, fps):
-    """Still stretches must be the planned freezes, not a stalled decoder or a wrong trim."""
+def _source_frames(context, output, stamps, fps):
+    """For every output frame, the signature of the source frame the plan puts there (None if unknown).
+
+    Each segment's source range is decoded once at the output rate, so frame k of a segment lines up
+    with output frame target_start + k. Frames under a planned effect or outside any segment stay None.
+    """
+    if context is None:
+        return None
+    nominal = 1_000_000 / float(fps)
+    signatures = [None] * len(stamps)
+    for segment in output["segments"]:
+        try:
+            frames = _frame_stats(Path(context.source(segment["source_id"])["path"]),
+                                  start_us=segment["source_start_us"], duration_us=segment["duration_us"],
+                                  fps=Fraction(fps).limit_denominator(1001))
+        except (SlicingError, subprocess.CalledProcessError, OSError):
+            continue
+        start, end = segment["target_start_us"], segment["target_start_us"] + segment["duration_us"]
+        for index, at in enumerate(stamps):
+            if start <= at < end:
+                k = round((at - start) / nominal)
+                if 0 <= k < len(frames):
+                    signatures[index] = frames[k][2]
+    return signatures
+
+
+def _held_frames(rows, output, stats, stamps, fps, context=None):
+    """Still stretches must be the planned freezes, not a stalled decoder or a wrong trim.
+
+    A stretch the source itself holds (a slide, a paused screen recording) is the content, not a stall:
+    it is explained when each held frame matches the source frame the plan puts there.
+    """
     nominal = round(1_000_000 / float(fps))
     stills = []
     run_start = 0
@@ -252,17 +289,27 @@ def _held_frames(rows, output, stats, stamps, fps):
             planned[-1] = (planned[-1][0], max(planned[-1][1], end_us))
         else:
             planned.append((start_us, end_us))
+    source = _source_frames(context, output, stamps, fps) if stills else None
+
+    def source_held(first, last):
+        # Every held output frame shows the source frame the plan puts there: the source held too.
+        if source is None or last > len(source):
+            return False
+        return all(source[i] is not None and _same_frame(stats[i][2], source[i]) for i in range(first, last))
+
     unexplained = []
     for first, last in stills:
+        if source_held(first, last):
+            continue
         start_us = stamps[first] if first < len(stamps) else 0
         end_us = stamps[last] if last < len(stamps) else start_us + (last - first) * nominal
         if not any(start_us >= p0 - 2 * nominal and end_us <= p1 + 2 * nominal for p0, p1 in planned):
             unexplained.append((first, (last - first) * nominal))
     _check(rows, "frames", "still_frames",
            "passed" if not unexplained else "failed", "automatic",
-           f"{len(unexplained)} still stretches that no planned freeze explains; "
+           f"{len(unexplained)} still stretches that neither a planned freeze nor the source explains; "
            f"first {unexplained[0][1]}us at frame {unexplained[0][0]}" if unexplained
-           else "Every still stretch matches a planned freeze",
+           else "Every still stretch is a planned freeze or held in the source",
            start=stamps[unexplained[0][0]] if unexplained and unexplained[0][0] < len(stamps) else 0)
 
 
@@ -750,7 +797,7 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
                        intent_id=cid, start=target[0], end=target[0])
 
     # Mechanical picture checks on the rendered file -------------------------------------
-    _mechanical_picture_checks(rows, output, Path(descriptor["path"]), video_asr)
+    _mechanical_picture_checks(rows, output, Path(descriptor["path"]), video_asr, context)
 
     # Pictures for review ----------------------------------------------------------------
     frame_dir = report_path.with_name(report_path.stem + "-frames")

@@ -795,3 +795,35 @@ def test_a_review_that_does_not_match_the_report_is_refused(case, change):
     with pytest.raises(SlicingError, match="QA review does not apply"):
         apply_review(report_path, Path(result["frames_dir"]), review_path)
     assert read_json(report_path)["review"] if False else True
+
+
+def test_a_still_stretch_the_source_also_holds_is_the_content_not_a_stall(monkeypatch):
+    from fractions import Fraction
+    from auto_cut_slicing import qa
+
+    held, moving = b"\x10" * 576, [bytes([i]) * 576 for i in range(0, 250, 25)]
+    # Output frames 0-9: frames 2-6 repeat one picture.
+    out = [(100.0, 50.0, moving[0]), (100.0, 50.0, moving[1])] + [(100.0, 50.0, held)] * 5 \
+        + [(100.0, 50.0, value) for value in moving[7:10]]
+    stamps = [i * 40_000 for i in range(10)]
+    output = {"segments": [{"source_id": "talk", "source_start_us": 1_000_000, "target_start_us": 0,
+                            "duration_us": 400_000}], "effects": []}
+
+    class Context:
+        def source(self, source_id):
+            return {"path": "talk.mp4"}
+
+    def checked(source):
+        monkeypatch.setattr(qa, "_frame_stats", lambda *args, **kwargs: source)
+        rows = []
+        qa._held_frames(rows, output, out, stamps, Fraction(25), Context())
+        return rows[0]["status"]
+
+    # A slide held in the source at the same place: passed.
+    assert checked(out) == "passed"
+    # The source moved there, so the output stalled: failed.
+    assert checked([(100.0, 50.0, value) for value in moving]) == "failed"
+    # Without the source to compare, a still stretch still fails closed.
+    rows = []
+    qa._held_frames(rows, output, out, stamps, Fraction(25))
+    assert rows[0]["status"] == "failed"
