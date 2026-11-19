@@ -23,6 +23,7 @@ from auto_cut_slicing.intent import (
     validate,
 )
 from auto_cut_slicing.io import file_sha256, read_json, write_json
+from auto_cut_slicing.media import describe_source
 from auto_cut_slicing.render import render_output
 from auto_cut_slicing.schema import load_schema, schema_errors
 
@@ -583,3 +584,96 @@ def test_qa_rejects_a_seam_freeze_that_skips_the_transition(tmp_path):
     shows_next = checked("next", 3.04, 3.04)  # no freeze: the transition fills the pause
     assert [row["status"] for row in shows_next] == ["failed"]
     assert "different picture" in shows_next[0]["detail"]
+
+
+def _checks(report, kind):
+    return [row for row in report["checks"] if row["kind"] == kind]
+
+
+def test_qa_mechanical_checks_pass_on_a_planned_render(case):
+    from auto_cut_slicing.qa import run_qa
+
+    path, plan, video = _render(case, _intent(case), "mech-ok")
+    run_qa(case["context"], path, plan, "out", video, None, case["dir"] / "qa-mech-ok.json")
+    report = read_json(case["dir"] / "qa-mech-ok.json")
+    for kind in ("frame_count", "frame_timing", "black_frames", "blurred_frames", "luma_flashes",
+                 "still_frames"):
+        rows = _checks(report, kind)
+        assert len(rows) == 1, kind
+        assert rows[0]["status"] == "passed", (kind, rows[0]["detail"])
+        assert rows[0]["method"] == "automatic"
+
+
+def test_qa_fails_an_output_with_a_missing_frame(case):
+    from auto_cut_slicing.qa import run_qa
+
+    path, plan, video = _render(case, _intent(case), "mech-drop")
+    damaged = case["dir"] / "mech-drop-missing.mp4"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-i", str(video), "-vf",
+        "select='not(eq(n,40))',setpts=N/25/TB", "-an", "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", str(damaged)], check=True, capture_output=True)
+    run_qa(case["context"], path, plan, "out", damaged, None, case["dir"] / "qa-mech-drop.json")
+    report = read_json(case["dir"] / "qa-mech-drop.json")
+    assert _checks(report, "frame_count")[0]["status"] == "failed"
+    assert report["overall"] == "failed"
+
+
+def test_qa_fails_a_black_picture(case):
+    from auto_cut_slicing.qa import run_qa
+
+    path, plan, video = _render(case, _intent(case), "mech-black")
+    # Append a black stretch: a rendered picture must never contain frames with no content.
+    blacked = case["dir"] / "mech-black-damaged.mp4"
+    descriptor = describe_source(video)
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-i", str(video), "-an", "-vf",
+        "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='gte(t,4)'",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(blacked)],
+        check=True, capture_output=True)
+    assert descriptor["duration_us"] > 4_000_000
+    run_qa(case["context"], path, plan, "out", blacked, None, case["dir"] / "qa-mech-black.json")
+    report = read_json(case["dir"] / "qa-mech-black.json")
+    assert _checks(report, "black_frames")[0]["status"] == "failed"
+    assert report["overall"] == "failed"
+
+
+def test_qa_fails_a_still_stretch_that_no_freeze_explains(case):
+    from auto_cut_slicing.qa import run_qa
+
+    path, plan, video = _render(case, _intent(case), "mech-still")
+    frozen = case["dir"] / "mech-still-damaged.mp4"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-i", str(video), "-vf",
+        "trim=start_frame=60,setpts=PTS-STARTPTS,tpad=start_mode=clone:start_duration=0.8,"
+        "trim=duration=5.4,setpts=N/25/TB",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-an", str(frozen)],
+        check=True, capture_output=True)
+    run_qa(case["context"], path, plan, "out", frozen, None, case["dir"] / "qa-mech-still.json")
+    report = read_json(case["dir"] / "qa-mech-still.json")
+    assert _checks(report, "still_frames")[0]["status"] == "failed"
+
+
+def test_qa_does_not_count_a_planned_freeze_as_a_stalled_picture(case):
+    from auto_cut_slicing.qa import run_qa
+
+    intent = _intent(case)
+    clip = intent["outputs"][0]["clips"][0]
+    clip["operations"].append({
+        "intent_id": "freeze-1", "kind": "freeze_cover", "covers": [],
+        "standard_rule": "clean_cut_in", "purpose": "clean_cut_in",
+        "start": _anchor("0:00", 0),
+        "end": _anchor("0:05.60", 5_600_000),
+        "frame": {"ref": "frame", "value_us": 2_480_000, "source_id": "talk",
+                  "source_sha256": case["sha"], "evidence_id": "frames-1"},
+        "visual_review": {"status": "needs_human", "evidence_ids": ["frames-1"], "observation": "Not reviewed."},
+        "rationale": "Freeze the held frame over the opening.",
+    })
+    from auto_cut_slicing import evidence
+    evidence.frames(case["context"], "talk", "frames-1", [2_500_000])
+    intent["bindings"]["evidence_manifest_sha256"] = file_sha256(
+        case["dir"] / "evidence" / "manifest.json")
+    path, plan, video = _render(case, intent, "mech-freeze")
+    run_qa(case["context"], path, plan, "out", video, None, case["dir"] / "qa-mech-freeze.json")
+    report = read_json(case["dir"] / "qa-mech-freeze.json")
+    assert _checks(report, "still_frames")[0]["status"] == "passed"

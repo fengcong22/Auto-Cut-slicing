@@ -44,7 +44,9 @@
             "coverage_complete", "operation_compiled", "phrase_absent", "phrase_present",
             "cue_first_word", "must_keep_present", "duration_match", "cut_not_inside_word",
             "sentence_complete", "seam_gap", "seam_discontinuity", "opening_frame",
-            "seam_frames", "seam_pause_picture", "freeze_frames", "mute_silence", "unlisted_change", "listening", "pacing"
+            "seam_frames", "seam_pause_picture", "freeze_frames", "mute_silence", "unlisted_change",
+            "frame_count", "frame_timing", "black_frames", "blurred_frames", "luma_flashes",
+            "still_frames", "speech_present", "listening", "pacing"
           ]
         },
         "status": {"enum": ["passed", "failed", "ai_reviewed", "needs_human", "not_run"]},

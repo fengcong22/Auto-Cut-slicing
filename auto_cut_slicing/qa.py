@@ -20,6 +20,9 @@ from .schema import require_schema
 
 _PHRASE_WINDOW_US = 2_000_000
 _SILENCE_DBFS = -60.0
+_DARK_LUMA = 16.0  # an all-black frame averages far below any real picture
+_BLUR_VARIANCE = 12.0  # Laplacian variance of a frame with no usable detail
+_FLASH_LUMA = 60.0  # luma jump between adjacent frames that reads as a white flash
 _PICTURE_CHANGE = 8.0  # mean gray difference (0-255) on a 48x27 proxy
 _MOTION_PEAK = 40  # a single pixel this far from the held frame is real motion, not compression noise
 _MOTION_PIXELS = 4  # that many pixels must move together, so one noisy pixel does not count
@@ -64,6 +67,182 @@ def _gray_run(video: Path, start_us: int, duration_us: int) -> list[bytes]:
     ).stdout
     size = 48 * 27
     return [raw[i:i + size] for i in range(0, len(raw) - size + 1, size)]
+
+
+def _frame_timestamps(video: Path) -> list[int]:
+    """Presentation timestamps (µs) of every decoded frame, in order."""
+    from .media import _run, find_tool
+
+    result = _run(
+        [find_tool("ffprobe"), "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(video)],
+        purpose="Frame timestamp probe",
+    )
+    stamps = []
+    for line in result.stdout.splitlines():
+        try:
+            stamps.append(round(float(line.strip().rstrip(",")) * 1_000_000))
+        except ValueError:
+            continue
+    return sorted(stamps)
+
+
+def _frame_stats(video: Path) -> list[tuple[float, float, bytes]]:
+    """Per-frame (mean luma, Laplacian variance, 32x18 signature) in decode order."""
+    from .media import find_tool
+
+    result = subprocess.run(
+        [find_tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(video),
+         "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "-"],
+        check=True, capture_output=True,
+    )
+    size = 64 * 36
+    raw = result.stdout
+    stats = []
+    for start in range(0, len(raw) - size + 1, size):
+        frame = raw[start:start + size]
+        mean = sum(frame) / size
+        # 4-neighbour Laplacian: sum of squared responses flags a frame with no edge detail.
+        total = 0
+        for y in range(1, 35):
+            row = y * 64
+            for x in range(1, 63):
+                i = row + x
+                delta = 4 * frame[i] - frame[i - 1] - frame[i + 1] - frame[i - 64] - frame[i + 64]
+                total += delta * delta
+        # Half-resolution signature: 32x18 samples, enough to tell a held frame from a new one.
+        signature = b"".join(
+            frame[y * 64:(y + 1) * 64:2] for y in range(0, 36, 2))
+        stats.append((mean, total / ((62) * 34) / 16, signature))
+    return stats
+
+
+def _mechanical_picture_checks(rows, output, video, video_asr=None):
+    """Deterministic picture checks on the rendered file itself.
+
+    These compare the file with the plan and look for frames that cannot be intended — missing or
+    extra frames, unexplained still frames, black or blank frames, flashes and blurred pictures.
+    They judge no content; whether a clean frame is semantically right stays a separate question.
+    """
+    try:
+        stamps = _frame_timestamps(video)
+        stats = _frame_stats(video)
+    except SlicingError as error:
+        _check(rows, "frames", "frame_count", "failed", "automatic",
+               f"Frame inspection failed: {error}")
+        return
+    # The output's own frame rate is authoritative; a plan may predate the rendered profile.
+    expected_fps = Fraction(str(_video_fps(video))).limit_denominator(1001)
+    planned = round(Fraction(output["duration_us"], 1_000_000) * expected_fps)
+    # Rounding may absorb at most the half frame that the planned frame count itself rounds away.
+    _check(rows, "frames", "frame_count",
+           "passed" if len(stamps) == planned else "failed", "automatic",
+           f"{len(stamps)} decoded frames against {planned} planned at {float(expected_fps):g} fps",
+           start=0, end=output["duration_us"])
+    if len(stamps) > 1:
+        steps = [b - a for a, b in zip(stamps, stamps[1:])]
+        nominal = round(1_000_000 / float(expected_fps))
+        jumps = [i for i, step in enumerate(steps) if abs(step - nominal) > nominal // 2]
+        _check(rows, "frames", "frame_timing",
+               "passed" if not jumps else "failed", "automatic",
+               f"{len(jumps)} irregular frame intervals; first at frame {jumps[0]} "
+               f"({stamps[jumps[0]]}us)" if jumps else "Every frame interval matches the output rate",
+               start=stamps[jumps[0]] if jumps else 0)
+    if stats:
+        dark = [i for i, row in enumerate(stats) if row[0] < _DARK_LUMA]
+        _check(rows, "frames", "black_frames",
+               "passed" if not dark else "failed", "automatic",
+               f"{len(dark)} near-black frames; first at frame {dark[0]}" if dark
+               else "No near-black frames", start=stamps[dark[0]] if dark and dark[0] < len(stamps) else 0)
+        blurred = [i for i, row in enumerate(stats)
+                   if row[1] < _BLUR_VARIANCE and row[0] >= _DARK_LUMA]
+        _check(rows, "frames", "blurred_frames",
+               "passed" if not blurred else "failed", "automatic",
+               f"{len(blurred)} frames without usable detail; first at frame {blurred[0]}" if blurred
+               else "Every frame carries edge detail", start=stamps[blurred[0]] if blurred and blurred[0] < len(stamps) else 0)
+        flashes = [i for i in range(1, len(stats))
+                   if abs(stats[i][0] - stats[i - 1][0]) > _FLASH_LUMA
+                   and not _near_planned_change(output, stamps, i)]
+        _check(rows, "frames", "luma_flashes",
+               "passed" if not flashes else "failed", "automatic",
+               f"{len(flashes)} unexplained luma jumps between adjacent frames; first at frame {flashes[0]}"
+               if flashes else "No unexplained brightness jumps",
+               start=stamps[flashes[0]] if flashes and flashes[0] < len(stamps) else 0)
+        _held_frames(rows, output, stats, stamps, expected_fps)
+    if video_asr is not None:
+        _check(rows, "speech", "speech_present", "passed", "automatic",
+               "Output speech was transcribed (--video-asr); the comparison is in the phrase checks.")
+
+
+def _video_fps(video: Path) -> float:
+    from .media import _probe
+
+    for stream in _probe(video).get("streams", []):
+        if stream.get("codec_type") == "video":
+            try:
+                value = float(Fraction(str(stream.get("avg_frame_rate", "0/0"))))
+            except (ValueError, ZeroDivisionError):
+                continue
+            if value > 0:
+                return value
+    raise SlicingError("Rendered file has no readable video frame rate")
+
+
+def _near_planned_change(output, stamps, index):
+    """A jump at a planned seam or freeze boundary is the edit itself, not a defect."""
+    if index < len(stamps):
+        at = stamps[index]
+        boundaries = {row["target_start_us"] for row in output["segments"]}
+        for effect in output.get("effects", []):
+            boundaries.add(effect["target_start_us"])
+            boundaries.add(effect["target_start_us"] + effect["duration_us"])
+        return any(abs(at - boundary) <= 1_000_000 for boundary in boundaries)
+    return False
+
+
+def _same_frame(first: bytes, second: bytes) -> bool:
+    """Two frames are the same picture when almost every sampled pixel matches."""
+    if not first or len(first) != len(second):
+        return False
+    close = sum(1 for a, b in zip(first, second) if abs(a - b) <= 2)
+    return close >= len(first) * 0.995
+
+
+def _held_frames(rows, output, stats, stamps, fps):
+    """Still stretches must be the planned freezes, not a stalled decoder or a wrong trim."""
+    nominal = round(1_000_000 / float(fps))
+    stills = []
+    run_start = 0
+    for i in range(1, len(stats)):
+        same = _same_frame(stats[i][2], stats[run_start][2])
+        if not same:
+            if i - run_start > 1:
+                stills.append((run_start, i))
+            run_start = i
+    if len(stats) - run_start > 1:
+        stills.append((run_start, len(stats)))
+    planned = []
+    for start_us, end_us in sorted(
+        (effect["target_start_us"], effect["target_start_us"] + effect["duration_us"])
+        for effect in output.get("effects", []) if effect["kind"] == "freeze_frame"
+    ):
+        # Adjacent freezes read as one still stretch, and a seam pause may hold across both.
+        if planned and start_us <= planned[-1][1] + nominal:
+            planned[-1] = (planned[-1][0], max(planned[-1][1], end_us))
+        else:
+            planned.append((start_us, end_us))
+    unexplained = []
+    for first, last in stills:
+        start_us = stamps[first] if first < len(stamps) else 0
+        end_us = stamps[last] if last < len(stamps) else start_us + (last - first) * nominal
+        if not any(start_us >= p0 - 2 * nominal and end_us <= p1 + 2 * nominal for p0, p1 in planned):
+            unexplained.append((first, (last - first) * nominal))
+    _check(rows, "frames", "still_frames",
+           "passed" if not unexplained else "failed", "automatic",
+           f"{len(unexplained)} still stretches that no planned freeze explains; "
+           f"first {unexplained[0][1]}us at frame {unexplained[0][0]}" if unexplained
+           else "Every still stretch matches a planned freeze",
+           start=stamps[unexplained[0][0]] if unexplained and unexplained[0][0] < len(stamps) else 0)
 
 
 def _hidden_motion(source_path: Path, start_us: int, end_us: int) -> tuple[float, int | None]:
@@ -403,6 +582,9 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
                 _check(rows, f"{cid}-cue", "cue_first_word", "passed" if ok else "failed", "automatic",
                        f"output speech after the clip start begins {spoken[:16]!r}",
                        intent_id=cid, start=target[0], end=target[0])
+
+    # Mechanical picture checks on the rendered file -------------------------------------
+    _mechanical_picture_checks(rows, output, Path(descriptor["path"]), video_asr)
 
     # Pictures for review ----------------------------------------------------------------
     frame_dir = report_path.with_name(report_path.stem + "-frames")
