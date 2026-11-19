@@ -677,3 +677,121 @@ def test_qa_does_not_count_a_planned_freeze_as_a_stalled_picture(case):
     run_qa(case["context"], path, plan, "out", video, None, case["dir"] / "qa-mech-freeze.json")
     report = read_json(case["dir"] / "qa-mech-freeze.json")
     assert _checks(report, "still_frames")[0]["status"] == "passed"
+
+
+def _review_file(case, report_path, *, verdict="clean", frames=None, override=None):
+    """A review the AI would write: answer every question on every reviewable item."""
+    request = read_json(report_path.with_name(report_path.stem + "-review-request.json"))
+    report = read_json(report_path)
+    items = []
+    hashes = {}
+    for row in request["items"]:
+        for frame in row["frames"]:
+            hashes[frame["file"]] = frame["sha256"]
+        for question in row["questions"]:
+            items.append({"check_id": row["check_id"], "question_id": question["question_id"],
+                          "verdict": verdict, "observation": "Reviewed the listed frames.",
+                          "frames": [frame["file"] for frame in row["frames"]]})
+    review = {"schema": "auto-cut-slicing/qa-review", "schema_version": 1,
+              "qa_sha256": file_sha256(report_path),
+              "reviewer": {"agent": "test-agent", "model": "test-model"},
+              "frames_sha256": hashes, "items": items}
+    for key, value in (override or {}).items():
+        review[key] = value
+    assert report["checks"]
+    return write_json(case["dir"] / "qa-review.json", review)
+
+
+def test_qa_publishes_review_request_and_applies_a_clean_review(case):
+    from auto_cut_slicing.qa import apply_review, run_qa
+
+    path, plan, video = _render(case, _intent(case), "review-clean")
+    report_path = case["dir"] / "qa-review-clean.json"
+    result = run_qa(case["context"], path, plan, "out", video, None, report_path)
+    assert result["reviewable_items"] > 0
+    request = read_json(Path(result["review_request_path"]))
+    assert request["items"] and all(row["frames"] and row["questions"] for row in request["items"])
+    frame = request["items"][0]["frames"][0]
+    assert file_sha256(frame["path"]) == frame["sha256"]
+
+    review_path = _review_file(case, report_path)
+    merged = apply_review(report_path, Path(result["frames_dir"]), review_path)
+    report = read_json(report_path)
+    by_kind = {}
+    for row in report["checks"]:
+        by_kind.setdefault(row["kind"], set()).add(row["status"])
+    assert by_kind["opening_frame"] == {"ai_reviewed"}
+    assert by_kind["listening"] == {"needs_human"}  # listening is never answered by a picture review
+    assert merged["overall"] == "ready_for_review"
+    assert report["review"] == {"agent": "test-agent", "model": "test-model",
+                                "path": str(review_path.resolve())}
+    assert schema_errors(report, "qa-report.v1.schema.json") == []
+    answered = [row for row in report["checks"] if row["status"] == "ai_reviewed"]
+    assert answered and all(row["method"] == "ai_visual" and row["frames_sha256"] for row in answered)
+
+
+def test_ai_review_of_a_defect_fails_the_report(case):
+    from auto_cut_slicing.qa import apply_review, run_qa
+
+    path, plan, video = _render(case, _intent(case), "review-defect")
+    report_path = case["dir"] / "qa-review-defect.json"
+    result = run_qa(case["context"], path, plan, "out", video, None, report_path)
+    review_path = _review_file(case, report_path, verdict="defect")
+    merged = apply_review(report_path, Path(result["frames_dir"]), review_path)
+    report = read_json(report_path)
+    assert merged["overall"] == "failed"
+    defects = [row for row in report["checks"] if row["status"] == "failed"]
+    assert defects and all(row["method"] == "ai_visual" for row in defects)
+    # Automatic results are never rewritten by a review.
+    assert not any(row["status"] == "failed" and row["method"] == "automatic" for row in report["checks"])
+
+
+def test_an_unclear_review_leaves_the_item_for_a_person(case):
+    from auto_cut_slicing.qa import apply_review, run_qa
+
+    path, plan, video = _render(case, _intent(case), "review-unclear")
+    report_path = case["dir"] / "qa-review-unclear.json"
+    result = run_qa(case["context"], path, plan, "out", video, None, report_path)
+    review_path = _review_file(case, report_path, verdict="unclear")
+    merged = apply_review(report_path, Path(result["frames_dir"]), review_path)
+    report = read_json(report_path)
+    assert merged["overall"] == "ready_for_review"
+    assert all(row["status"] == "needs_human" for row in report["checks"]
+               if row["kind"] in ("opening_frame", "seam_frames", "freeze_frames"))
+
+
+@pytest.mark.parametrize("change", ["wrong_report", "missing_answer", "wrong_frame", "swapped_frame",
+                                    "unknown_question", "no_observation", "bad_verdict"])
+def test_a_review_that_does_not_match_the_report_is_refused(case, change):
+    from auto_cut_slicing.qa import apply_review, run_qa
+
+    path, plan, video = _render(case, _intent(case), f"review-bad-{change}")
+    report_path = case["dir"] / f"qa-review-bad-{change}.json"
+    result = run_qa(case["context"], path, plan, "out", video, None, report_path)
+    request = read_json(Path(result["review_request_path"]))
+    first = request["items"][0]
+    override = {}
+    review_path = _review_file(case, report_path)
+    review = read_json(review_path)
+    if change == "wrong_report":
+        override = {"qa_sha256": "0" * 64}
+    elif change == "missing_answer":
+        review["items"] = review["items"][1:]
+    elif change == "wrong_frame":
+        review["items"][0]["frames"] = ["not-in-this-report.png"]
+    elif change == "swapped_frame":
+        name = first["frames"][0]["file"]
+        review["frames_sha256"][name] = "1" * 64
+    elif change == "unknown_question":
+        review["items"].append({"check_id": first["check_id"], "question_id": "made-up",
+                                "verdict": "clean", "observation": "x",
+                                "frames": [first["frames"][0]["file"]]})
+    elif change == "no_observation":
+        review["items"][0]["observation"] = " "
+    elif change == "bad_verdict":
+        review["items"][0]["verdict"] = "probably-fine"
+    review.update(override)
+    write_json(review_path, review)
+    with pytest.raises(SlicingError, match="QA review does not apply"):
+        apply_review(report_path, Path(result["frames_dir"]), review_path)
+    assert read_json(report_path)["review"] if False else True

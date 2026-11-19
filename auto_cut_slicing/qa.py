@@ -15,7 +15,7 @@ from .boundaries import _sentences
 from .context import EditContext
 from .errors import SlicingError
 from .intent import check_intent
-from .io import file_sha256, read_json, write_new_json
+from .io import file_sha256, read_json, write_json, write_new_json
 from .schema import require_schema
 
 _PHRASE_WINDOW_US = 2_000_000
@@ -28,13 +28,30 @@ _MOTION_PEAK = 40  # a single pixel this far from the held frame is real motion,
 _MOTION_PIXELS = 4  # that many pixels must move together, so one noisy pixel does not count
 
 
-def _check(rows, check_id, kind, status, method, detail, *, intent_id=None, start=None, end=None):
-    rows.append({"check_id": check_id, "intent_id": intent_id, "kind": kind, "status": status,
-                 "method": method, "evidence_ids": [], "target_start_us": start,
-                 "target_end_us": end, "detail": detail})
+# Questions an AI reviewer answers for each picture item. The wording is fixed so that a review
+# file can be checked against the report rather than trusted blindly.
+_QUESTIONS = {
+    "opening_frame": [("opening_clean", "Does the opening frame show only this output's own content, "
+                                       "with no frame, icon or text from another page?")],
+    "seam_frames": [("seam_clean", "At this join, does the first frame of the new clip show only new "
+                                   "content, with no leftovers, fragments or flashes of the previous one?")],
+    "freeze_frames": [("freeze_clean", "Do the held frame and the frame where playback resumes show only "
+                                       "the intended picture, with no flash of other content?")],
+}
 
 
-def _export_frame(video: Path, target_us: int, lead_us: int, image: Path) -> None:
+def _check(rows, check_id, kind, status, method, detail, *, intent_id=None, start=None, end=None,
+           frames=None):
+    row = {"check_id": check_id, "intent_id": intent_id, "kind": kind, "status": status,
+           "method": method, "evidence_ids": [], "target_start_us": start,
+           "target_end_us": end, "detail": detail}
+    if frames:
+        row["frames"] = list(frames)
+    rows.append(row)
+
+
+def _export_frame(video: Path, target_us: int, lead_us: int, image: Path) -> dict[str, str]:
+    """Write one review frame and describe it; the SHA-256 binds any later AI answer to these bytes."""
     from .media import find_tool
 
     subprocess.run(
@@ -43,6 +60,10 @@ def _export_frame(video: Path, target_us: int, lead_us: int, image: Path) -> Non
          "-frames:v", "1", "-vf", "scale=960:-2", str(image)],
         check=True, capture_output=True,
     )
+    if not image.is_file():
+        # A timestamp past the last decodable frame yields no picture; the caller skips it.
+        return {}
+    return {"file": image.name, "sha256": file_sha256(image)}
 
 
 def _gray(video: Path, at_us: int) -> bytes:
@@ -346,28 +367,31 @@ def _pause_picture_checks(rows, context, output, video, frame_us, duration_us, f
             problems.append(f"shows a different picture before the freeze ends (max change {worst:.1f})")
         played = segment["source_start_us"] + max(0, freeze_end - join)
         review = ""
+        frames = []
         if moving is not None and played > moving + frame_us and not problems:
             # Playback resumes after the next picture has already started moving, so part of the
             # transition never plays. That is right only when the hidden frames still show the previous
             # topic (a wipe that has not covered it yet) and the cut-in is the first frame where it is
             # covered. Pixels cannot tell that residue from a transition that has already finished, so
             # the frames go to a person instead of a pass or a fail.
-            names = []
             if frame_dir is not None:
                 # The hidden frames exist only in the source: in the output they are the held frame.
                 # Export them up to the resume point, then the output's first played frame.
                 step = max(frame_us, (played - moving) // 12 // frame_us * frame_us)
                 for t in range(moving, played, step):
                     image = frame_dir / f"src{t}us_hidden.png"
-                    _export_frame(Path(source["path"]), t, 0, image)
-                    names.append(image.name)
+                    exported_row = _export_frame(Path(source["path"]), t, 0, image)
+                    if exported_row:
+                        frames.append(exported_row)
                 image = frame_dir / f"t{freeze_end}us_cut-in.png"
-                _export_frame(video, freeze_end, 0, image)
-                names.append(image.name)
+                exported_row = _export_frame(video, freeze_end, 0, image)
+                if exported_row:
+                    frames.append(exported_row)
             review = (f" Playback resumes at source {played}us, after the next picture starts moving "
                       f"(source {moving}us). Confirm the skipped frames still show the previous topic and "
                       f"the cut-in is the first frame where it is covered"
-                      + (f": {frame_dir.name}/{', '.join(names)}" if names else "") + ".")
+                      + (f": {frame_dir.name}/{', '.join(row['file'] for row in frames)}"
+                         if frames else "") + ".")
         status = "failed" if problems else ("needs_human" if review else "passed")
         _check(rows, f"pause-picture-{join}", "seam_pause_picture", status, "automatic",
                (f"The {(onset - join) / 1e6:.2f}s pause holds the previous picture until the next picture "
@@ -376,7 +400,8 @@ def _pause_picture_checks(rows, context, output, video, frame_us, duration_us, f
                 f"The {(onset - join) / 1e6:.2f}s pause before the next clip's sound " + "; ".join(problems) +
                 ". Hold the previous clip's last frame until the transition's first frame, or the first frame "
                 "where old content is covered, and let the rest of the transition play."),
-               intent_id=segment["clip_id"], start=join, end=onset)
+               intent_id=segment["clip_id"], start=join, end=onset,
+               frames=[row["file"] for row in frames] if review and frame_dir is not None else None)
 
 
 def _rms_dbfs(video: Path, start_us: int, duration_us: int) -> float | None:
@@ -431,6 +456,147 @@ def _cuts(output: dict[str, Any], durations: dict[str, int]):
             yield segment, "in", start, segment["target_start_us"]
         if end < durations[segment["source_id"]]:
             yield segment, "out", end, segment["target_start_us"] + segment["duration_us"]
+
+
+def _review_request(report_path, frames_dir, rows):
+    """Describe the picture items an AI can review, with the exact frames it must look at.
+
+    The package never calls a model: whoever runs the review reads this file, answers each question,
+    and writes a qa-review file that ``apply_review`` checks against this request and the report.
+    """
+    items = []
+    for row in rows:
+        if row["status"] != "needs_human" or not row.get("frames"):
+            continue
+        questions = _QUESTIONS.get(row["kind"])
+        if not questions:
+            continue
+        shown = []
+        for name in row["frames"]:
+            path = frames_dir / name
+            if path.is_file():
+                shown.append({"path": str(path), "file": name, "sha256": file_sha256(path)})
+        if not shown:
+            continue
+        items.append({
+            "check_id": row["check_id"], "kind": row["kind"], "intent_id": row["intent_id"],
+            "target_start_us": row["target_start_us"], "target_end_us": row["target_end_us"],
+            "detail": row["detail"],
+            "frames": shown,
+            "questions": [{"question_id": key, "text": text} for key, text in questions],
+        })
+    return {
+        "schema": "auto-cut-slicing/qa-review-request", "schema_version": 1,
+        "qa_path": str(report_path), "frames_dir": str(frames_dir), "items": items,
+        "instruction": "Look at every listed frame and answer each question. Write a qa-review file "
+                       "(schemas/qa-review.v1.schema.json) with qa_sha256 of the QA report, the frame "
+                       "hashes you checked, and one item per question: clean, defect or unclear.",
+    }
+
+
+def _review_problems(review, report, report_path, frames_dir):
+    """Everything wrong with a review file, as human-readable strings; empty means it applies."""
+    problems = []
+    if not isinstance(review, dict):
+        return ["review is not an object"]
+    if review.get("qa_sha256") != file_sha256(report_path):
+        problems.append("qa_sha256 does not match the QA report")
+    reviewer = review.get("reviewer")
+    if not isinstance(reviewer, dict) or not reviewer.get("agent") or not reviewer.get("model"):
+        problems.append("reviewer agent and model are required")
+    wanted = {}
+    for row in report["checks"]:
+        if row["status"] == "needs_human" and row.get("frames"):
+            for key, _ in _QUESTIONS.get(row["kind"], []):
+                wanted[(row["check_id"], key)] = row["frames"]
+    seen = set()
+    hashes = review.get("frames_sha256") or {}
+    for item in review.get("items") or []:
+        if not isinstance(item, dict):
+            problems.append("review item is not an object")
+            continue
+        key = (item.get("check_id"), item.get("question_id"))
+        if key not in wanted:
+            problems.append(f"{key[0]}/{key[1]} is not a reviewable question in this report")
+            continue
+        if key in seen:
+            problems.append(f"{key[0]}/{key[1]} is answered more than once")
+            continue
+        seen.add(key)
+        if item.get("verdict") not in ("clean", "defect", "unclear"):
+            problems.append(f"{key[0]}/{key[1]} has no usable verdict")
+        if not str(item.get("observation") or "").strip():
+            problems.append(f"{key[0]}/{key[1]} has no observation")
+        listed = item.get("frames") or []
+        if not listed:
+            problems.append(f"{key[0]}/{key[1]} cites no frames")
+        for name in listed:
+            if name not in wanted[key]:
+                problems.append(f"{key[0]}/{key[1]} cites {name}, which is not one of its frames")
+    missing = sorted(f"{cid}/{qid}" for (cid, qid) in wanted if (cid, qid) not in seen)
+    if missing:
+        problems.append("answers missing for: " + ", ".join(missing[:10]))
+    for name, digest in hashes.items():
+        path = Path(frames_dir) / name
+        if not path.is_file() or file_sha256(path) != digest:
+            problems.append(f"frame {name} does not match its recorded hash")
+        if not any(name in row["frames"] for row in report["checks"] if row.get("frames")):
+            problems.append(f"frame {name} is not part of this report")
+    return problems
+
+
+def apply_review(report_path, frames_dir, review_path):
+    """Merge AI picture verdicts into a QA report.
+
+    Only picture items the report left as ``needs_human`` can be answered. A clean answer becomes
+    ``ai_reviewed`` with method ``ai_visual``; a defect answer becomes ``failed``; ``unclear`` stays
+    ``needs_human``. Automatic results and listening or pacing items are never touched.
+    """
+    try:
+        require_schema(read_json(review_path), "qa-review.v1.schema.json", "QA review")
+    except SlicingError as error:
+        raise SlicingError(f"QA review does not apply: {error}") from error
+    report = read_json(report_path)
+    problems = _review_problems(read_json(review_path), report, report_path, frames_dir)
+    if problems:
+        raise SlicingError("QA review does not apply: " + "; ".join(problems[:8]))
+    review = read_json(review_path)
+    answers = {(item["check_id"], item["question_id"]): item for item in review["items"]}
+    answers_by_check = {}
+    for (check_id, _), item in answers.items():
+        answers_by_check.setdefault(check_id, []).append(item)
+    for row in report["checks"]:
+        if row["check_id"] not in answers_by_check:
+            continue
+        if row["status"] != "needs_human":
+            continue
+        items = answers_by_check[row["check_id"]]
+        defects = [item for item in items if item["verdict"] == "defect"]
+        unclear = [item for item in items if item["verdict"] == "unclear"]
+        notes = " | ".join(f"{item['observation']}" for item in items)
+        if defects:
+            row["status"], row["method"] = "failed", "ai_visual"
+            row["detail"] = f"AI visual review found a defect: {notes} Original: {row['detail']}"
+        elif unclear:
+            row["status"], row["method"] = "needs_human", "ai_visual"
+            row["detail"] = f"AI visual review was unclear: {notes} Original: {row['detail']}"
+        else:
+            row["status"], row["method"] = "ai_reviewed", "ai_visual"
+            row["detail"] = f"AI visual review: {notes} Original: {row['detail']}"
+        row["frames_sha256"] = {item["frames"][0]: review["frames_sha256"][item["frames"][0]]
+                                for item in items if item.get("frames")}
+    report["overall"] = "failed" if any(row["status"] == "failed" for row in report["checks"]) else "ready_for_review"
+    report["review"] = {"agent": review["reviewer"]["agent"], "model": review["reviewer"]["model"],
+                        "path": str(Path(review_path).resolve())}
+    require_schema(report, "qa-report.v1.schema.json", "QA report")
+    # The report itself is rewritten in place: the review is the only writer of these fields, and
+    # the frame hashes and qa_sha256 of the review no longer match once it is applied.
+    write_json(report_path, report)
+    counts = {}
+    for row in report["checks"]:
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+    return {"ok": report["overall"] != "failed", "overall": report["overall"], "counts": counts,
+            "report_path": str(Path(report_path).resolve())}
 
 
 def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video_asr, report_path,
@@ -594,32 +760,35 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
     joins = sorted({segment["target_start_us"] for segment in output["segments"]})
     exported = []
     for join in joins:
-        names = []
+        frames = []
         for offset, label in ((-frame_us, "before"), (0, "after")):
             t = join + offset
             if not 0 <= t < descriptor["duration_us"]:
                 continue
             image = frame_dir / f"t{t}us_{label}.png"
-            _export_frame(Path(descriptor["path"]), t, lead, image)
-            names.append(image.name)
-        exported.append((join, names))
+            exported_row = _export_frame(Path(descriptor["path"]), t, lead, image)
+            if exported_row:
+                frames.append(exported_row)
+        exported.append((join, frames))
     _pause_picture_checks(rows, context, output, Path(descriptor["path"]), frame_us, descriptor["duration_us"], frame_dir)
-    for join, names in exported:
+    for join, frames in exported:
         kind = "opening_frame" if join == 0 else "seam_frames"
         _check(rows, f"frames-{join}", kind, "needs_human", "automatic",
-               f"Review {frame_dir.name}/{', '.join(names)} for previous-topic residue or flashes.",
-               start=join, end=join)
+               f"Review {frame_dir.name}/{', '.join(row['file'] for row in frames)} for previous-topic "
+               "residue or flashes.",
+               start=join, end=join, frames=[row["file"] for row in frames])
     for effect in output.get("effects", []):
         a = effect["target_start_us"]
         b = a + effect["duration_us"]
         op_id = effect["item_id"].split("/")[-1]
         if effect["kind"] == "freeze_frame":
-            names = []
+            frames = []
             for t, label in ((b - frame_us, "freeze-last"), (b, "resume")):
                 if 0 <= t < descriptor["duration_us"]:
                     image = frame_dir / f"t{t}us_{label}.png"
-                    _export_frame(Path(descriptor["path"]), t, lead, image)
-                    names.append(image.name)
+                    exported_row = _export_frame(Path(descriptor["path"]), t, lead, image)
+            if exported_row:
+                frames.append(exported_row)
             source = context.source(effect["source_id"])
             motion, at = _hidden_motion(Path(source["path"]), effect["source_start_us"], effect["source_end_us"])
             hidden = ""
@@ -636,9 +805,10 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
                               f"{at}us) that continues after playback resumes; confirm the hidden frames are the "
                               "ones showing old content.")
             _check(rows, f"freeze-{effect['item_id']}", "freeze_frames", "needs_human", "automatic",
-                   f"Review the held frame and the hand-back to playback: {frame_dir.name}/{', '.join(names)}; "
+                   f"Review the held frame and the hand-back to playback: "
+                   f"{frame_dir.name}/{', '.join(row['file'] for row in frames)}; "
                    f"check for flashes of old content or a frozen new animation.{hidden}",
-                   intent_id=op_id, start=a, end=b)
+                   intent_id=op_id, start=a, end=b, frames=[row["file"] for row in frames])
         elif effect["kind"] == "mute":
             inner = max(0, effect["duration_us"] - 40_000)
             level = _rms_dbfs(Path(descriptor["path"]), a + 20_000, inner) if inner else None
@@ -676,8 +846,13 @@ def run_qa(context: EditContext, intent_path, plan_path, output_id, video, video
         report["limitations"].append("The intent is blocked; this output does not implement it.")
     require_schema(report, "qa-report.v1.schema.json", "QA report")
     write_new_json(report_path, report)
+    request_path = report_path.with_name(report_path.stem + "-review-request.json")
+    request = _review_request(report_path, frame_dir, rows)
+    write_new_json(request_path, request)
     counts = {}
     for row in rows:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
     return {"ok": report["overall"] != "failed", "overall": report["overall"], "counts": counts,
-            "report_path": str(report_path.resolve()), "frames_dir": str(frame_dir.resolve())}
+            "report_path": str(report_path.resolve()), "frames_dir": str(frame_dir.resolve()),
+            "review_request_path": str(request_path.resolve()),
+            "reviewable_items": len(request["items"])}
