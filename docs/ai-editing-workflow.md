@@ -147,7 +147,7 @@
 | `black_frames`：没有黑场 | 逐帧亮度在 64×36 灰度代理上测量 | `passed` / `failed` |
 | `blurred_frames`：没有糊到不可用的帧 | 拉普拉斯方差，排除黑场后统计 | `passed` / `failed` |
 | `luma_flashes`：没有非计划的亮度突变 | 相邻帧亮度差；计划接缝和定格边界附近不计 | `passed` / `failed` |
-| `still_frames`：静帧只出现在计划的定格区间 | 逐帧像素签名（32×18 采样）比较，相邻定格区间先合并 | `passed` / `failed` |
+| `still_frames`：静帧只出现在计划的定格区间，或原片本身在同一处就是静止画面（课件页、暂停的录屏） | 逐帧像素签名（32×18 采样）比较，相邻定格区间先合并；其余静帧逐帧对照计划放在该处的原片帧，一致即为原片内容而非卡帧 | `passed` / `failed` |
 | `speech_present`：成片有语音 | 成片反向 ASR | `passed` / `failed` / `not_run` |
 | `unlisted_change`：没有意见之外的改动 | 计划操作与覆盖表对照 | `passed` / `failed` |
 | `listening` / `pacing`：听感与节奏 | 只能由人完成 | `needs_human` / `not_run` / `failed` |

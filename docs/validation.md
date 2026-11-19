@@ -185,7 +185,8 @@ QA 增加两类检查，都只读成片文件本身：
 
 - **机械项**（`frame_count`、`frame_timing`、`black_frames`、`blurred_frames`、`luma_flashes`、
   `still_frames`）：逐帧时间戳与像素统计，抓跳帧、丢帧、黑场、糊帧、计划外亮度突变与静帧。
-  `still_frames` 先合并相邻定格区间，接缝停顿不会被误报为卡帧。
+  `still_frames` 先合并相邻定格区间，接缝停顿不会被误报为卡帧；其余静帧逐帧对照计划放在该处的原片帧，
+  原片在同一处本来就静止（讲课视频的课件页）时不算卡帧。
 - **AI 看图复核**：QA 写出 `<report>-review-request.json`，逐项列出画面检查要看的帧（含 SHA-256）和固定问题。
   AI 看帧后写 qa-review 文件，`qa-review --report --review` 校验后合并：`clean` → `ai_reviewed`，
   `defect` → `failed`，`unclear` → 仍 `needs_human`。只影响画面类 `needs_human` 项，
