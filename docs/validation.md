@@ -178,3 +178,21 @@ Taskboard 的 VM/PMO 输入、结果、手动返修与离线执行器定向测�
 手动返修跨片段定格、语音画面起点绑定的 plan/render，成片均通过宿主的独立媒体与摘要校验。
 本轮没有调用真实语音服务、触发审批或附件交付，也没有进行人工试听、画面语义或目标应用验收。
 审查另记录 Taskboard 现有校验对短于 0.5 秒源视频的容差限制；本轮未修改 Taskboard。
+
+## 成片机械检查与 AI 看图复核 · 2026-11-19
+
+QA 增加两类检查，都只读成片文件本身：
+
+- **机械项**（`frame_count`、`frame_timing`、`black_frames`、`blurred_frames`、`luma_flashes`、
+  `still_frames`）：逐帧时间戳与像素统计，抓跳帧、丢帧、黑场、糊帧、计划外亮度突变与静帧。
+  `still_frames` 先合并相邻定格区间，接缝停顿不会被误报为卡帧。
+- **AI 看图复核**：QA 写出 `<report>-review-request.json`，逐项列出画面检查要看的帧（含 SHA-256）和固定问题。
+  AI 看帧后写 qa-review 文件，`qa-review --report --review` 校验后合并：`clean` → `ai_reviewed`，
+  `defect` → `failed`，`unclear` → 仍 `needs_human`。只影响画面类 `needs_human` 项，
+  自动检查结果、`listening`、`pacing` 不会被改写。
+
+边界：机械项判断“这一帧能否使用”，不判断内容语义；AI 复核也会出错，`ai_reviewed` 不等于验收。
+两点都未在真实素材上验证；测试只使用合成媒体，复核结论由测试脚本按请求结构生成，未调用真实模型。
+
+完整回归：`python -m pytest -q --basetemp=.local/pytest-ai-full`，
+421 项通过；`python -m ruff check .` 与 `git diff --check` 通过。

@@ -153,6 +153,11 @@
 | `listening` / `pacing`：听感与节奏 | 只能由人完成 | `needs_human` / `not_run` / `failed` |
 
 - 反向 ASR 只是一种证据：识别错误可能造成假阳性或假阴性，`failed` 时先回听确认再改。
+- `opening_frame` / `seam_frames` / `freeze_frames` 的 `needs_human` 可以由 AI 看图复核：QA 同时写出
+  `<report>-review-request.json`，列出每个画面项要看的帧（含哈希）和固定问题。AI 按要求看帧后写
+  qa-review 文件，`qa-review --report --review` 校验并合并：`clean` → `ai_reviewed`（`ai_visual`），
+  `defect` → `failed`，`unclear` → 仍 `needs_human`。自动检查结果、`listening`、`pacing` 不会被复核改写。
+  复核文件必须绑定当前 `qa.json` 的哈希、逐帧哈希和每一个问题，缺一项即拒绝。
 - 上表 `frame_count` 到 `still_frames` 是直接检查成片文件的机械项，不依赖 ASR 或主观判断，能抓住跳帧、丢帧、黑场、意外静帧和画面糊掉。它们只判断“这帧是否可用”，不判断内容对不对。
 - `seam_pause_picture` 标 `needs_human` 是因为像素分不清两种情况：定格盖住的运动帧可能还露着前一主题（转场没盖完，该继续定格），也可能转场已经播完（定格过头，该提前切入）。检查会把运动起点到起音之间的帧导出，由人确认切入点是旧内容刚被盖住的那一帧。
 - `overall` 只有 `failed` 和 `ready_for_review` 两种，没有“已验收”。

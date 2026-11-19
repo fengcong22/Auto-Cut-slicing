@@ -90,6 +90,10 @@ def parser() -> argparse.ArgumentParser:
     qa.add_argument("--video", required=True, type=Path)
     qa.add_argument("--video-asr", type=Path)
     qa.add_argument("--report", required=True, type=Path)
+    review = commands.add_parser(
+        "qa-review", help="把 AI 看图结论合并进 QA 报告（只改画面的 needs_human 项）")
+    review.add_argument("--report", required=True, type=Path)
+    review.add_argument("--review", required=True, type=Path)
     return root
 
 
@@ -158,6 +162,11 @@ def dispatch(args) -> dict:
             return compile_intent(args.intent, context, args.job, args.receipt, args.plan)
         except IntentError as error:
             return {"ok": False, "problems": error.problems}
+    if args.command == "qa-review":
+        from .qa import apply_review
+
+        return apply_review(args.report, args.report.with_name(args.report.stem + "-frames"),
+                            args.review)
     if args.command == "qa":
         from .context import EditContext
         from .qa import run_qa
@@ -273,7 +282,7 @@ def dispatch(args) -> dict:
 def main(argv=None) -> int:
     arguments = list(argv) if argv is not None else sys.argv[1:]
     batch_command = arguments[:1] == ["run"]
-    if arguments[:1] in (["run"], ["evidence"], ["intent"], ["qa"]) and hasattr(sys.stdout, 'reconfigure'):
+    if arguments[:1] in (["run"], ["evidence"], ["intent"], ["qa"], ["qa-review"]) and hasattr(sys.stdout, 'reconfigure'):
         # Taskboard consumes UTF-8 JSON even when the Windows host defaults to a code page.
         sys.stdout.reconfigure(encoding='utf-8')
     try:

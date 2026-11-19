@@ -27,6 +27,14 @@
       "enum": ["failed", "ready_for_review"]
     },
     "checks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/check"}},
+    "review": {
+      "type": "object", "additionalProperties": false,
+      "description": "AI 看图复核的来源；只有 qa-review 合并后才出现。",
+      "required": ["agent", "model", "path"],
+      "properties": {"agent": {"type": "string", "minLength": 1},
+                     "model": {"type": "string", "minLength": 1},
+                     "path": {"type": "string", "minLength": 1}}
+    },
     "limitations": {"type": "array", "items": {"type": "string"}}
   },
   "$defs": {
@@ -54,7 +62,15 @@
         "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
         "target_start_us": {"type": ["integer", "null"], "minimum": 0},
         "target_end_us": {"type": ["integer", "null"], "minimum": 0},
-        "detail": {"type": "string", "minLength": 1}
+        "detail": {"type": "string", "minLength": 1},
+        "frames": {
+          "type": "array", "items": {"type": "string", "minLength": 1},
+          "description": "本次画面检查涉及的导出帧文件名（相对 qa.json 同级的 -frames 目录）。"
+        },
+        "frames_sha256": {
+          "type": "object", "additionalProperties": {"$ref": "#/$defs/sha256"},
+          "description": "AI 看图后记录：引用帧文件名到复核时看到的字节哈希。"
+        }
       },
       "allOf": [
         {
