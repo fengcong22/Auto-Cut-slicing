@@ -155,8 +155,11 @@ stdout 仍是单行 JSON。`ready` / `rendered` / `blocked` / `checked` 退出�
 3. 执行 V01–V13：有问题时为 `INTENT_INVALID`，`blockers` 逐条列出规则、代码、消息和 JSON 路径；
    意图自身 `status: blocked` 时为 `INTENT_BLOCKED`，`blockers` 原样带出 AI 写的阻断。
 4. 意图必须恰好一个 output；编译并执行 V14。
-5. 交叉核对：只有一条意见、且固定句式解析器也能解析并编译成功时，两边的保留段（源、起点、时长）、
-   效果和总时长必须一致，否则 `INTENT_RULE_MISMATCH`。固定句式解析不了时记为 `not_applicable`，不阻断。
+5. 交叉核对：只有一条意见、且固定句式解析器也能解析并编译成功时，两边的保留段（源、起点、**覆盖的词**）、
+   效果和边界必须一致，否则 `INTENT_RULE_MISMATCH`。固定句式解析不了时记为 `not_applicable`，不阻断。
+   边界按“覆盖的词”比较：固定句式把用户写的时间落在时钟上，AI 落在词的边界上，因此两端之间只要
+   **没有任何词开始**，较长的一端就只是多包含了同一段静音（例如写 4:34 而 AI 停在停顿上限），视为同一次剪辑；
+   一旦中间夹着另一个词的起点，就是不同的剪辑，仍然阻断。两端起点不同、或效果不同，同样阻断。
 
 计划在 v2 字段之外增加 `planning_mode`、`output_id`、`ai_session`、`intent_sha256`、`evidence_manifest_sha256`、
 `coverage`、`rule_cross_check`（`agreed` / `not_applicable` / `null`）；每个操作带 `intent_id`。

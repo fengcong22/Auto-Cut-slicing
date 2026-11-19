@@ -281,17 +281,48 @@ def test_rule_parser_cross_check_agrees(v3):
     assert read_json(v3["context"]["plan_path"])["rule_cross_check"] == "agreed"
 
 
+def _segment(start_us, end_us, effects=()):
+    """A plan output in the engine's own shape: segments are objects, not tuples."""
+    return {"duration_us": end_us - start_us,
+            "segments": [{"id": "keep-1", "clip_id": "clip-1", "source_id": "source-1",
+                          "source_start_us": start_us, "duration_us": end_us - start_us,
+                          "target_start_us": 0}],
+            "effects": list(effects)}
+
+
 def test_rule_parser_disagreement_blocks(v3):
+    """The two readings cut different words, so the run stops for a human to choose."""
     v3["input"]["instructions"][0]["raw_text"] = RANGE
     save(v3)
     analyze(v3)
-    alignment_sha = file_sha256(v3["run_dir"] / "alignment.words.json")
-    end = {"ref": "word_edge", "value_us": 4_400_000, "source_id": "source-1",
-           "alignment_sha256": alignment_sha, "index": 9, "edge": "end", "text": "结果"}
-    write_intent(v3, intent(v3, RANGE, delete=False, end=end))
+    # The fixed patterns stop at 5.60 s; this ends after the whole next sentence instead.
+    end = {"ref": "word_edge", "value_us": 6_000_000, "source_id": "source-1",
+           "alignment_sha256": file_sha256(v3["run_dir"] / "alignment.words.json"),
+           "index": 9, "edge": "end", "text": "总结"}
+    value = intent(v3, RANGE, delete=False, end=end)
+    value["outputs"][0]["clips"][0]["end"] = {"mode": "time", "at": end}
+    write_intent(v3, value)
     receipt = plan(v3)
-    assert (receipt["status"], receipt["error"]["code"]) == ("blocked", "INTENT_RULE_MISMATCH"), receipt
+    assert receipt["status"] == "blocked"
     assert not Path(v3["context"]["plan_path"]).exists()
+
+
+def test_rule_parser_boundary_inside_silence_agrees(v3):
+    """A boundary placed in the pause around the same words is the same cut.
+
+    The fixed patterns put a written time on the clock; the AI puts it on word timing. When no word
+    starts between the two boundaries, the longer one only adds silence."""
+    v3["input"]["instructions"][0]["raw_text"] = RANGE
+    save(v3)
+    analyze(v3)
+    alignment = vm_pmo.load_alignment(v3["run_dir"] / "alignment.words.json", v3["descriptor"])
+    # "最后" starts at 4.90 s, so 5.60 s and 5.90 s both sit inside the pause after "总结".
+    rule, ai = _segment(0, 5_600_000), _segment(0, 5_900_000)
+    assert vm_pmo._same_cut(rule, ai, alignment)
+    # The same gap, but the AI runs past a word that starts inside it ("最后" at 4.90 s).
+    assert not vm_pmo._same_cut(_segment(0, 4_500_000), _segment(0, 5_600_000), alignment)
+    # A different start is never the same cut, however close the ends are.
+    assert not vm_pmo._same_cut(_segment(200_000, 5_600_000), _segment(0, 5_600_000), alignment)
 
 
 def test_render_rejects_intent_changed_after_planning(v3):

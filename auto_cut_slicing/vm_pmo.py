@@ -806,8 +806,34 @@ def _edit_signature(output):
     }
 
 
+def _covered_words(alignment, start_us, end_us):
+    """Words the fixed patterns and the AI would each cut through, ignoring silence between them."""
+    return [row for row in alignment['words']
+            if row['start_us'] < end_us and row['end_us'] > start_us]
+
+
+def _same_cut(left, right, alignment):
+    """The two readings cut the same material. A boundary may sit anywhere in the silence around the
+    words it covers: the fixed patterns place a written time on the clock, while the AI places it on
+    word timing, so one end can cover a few hundred milliseconds of the same pause. A word starting
+    between the two boundaries means they are different cuts, however small the difference."""
+    if left['duration_us'] == right['duration_us']:
+        return True
+    if not alignment or len(left['segments']) != 1 or len(right['segments']) != 1:
+        return False
+    first, second = left['segments'][0], right['segments'][0]
+    if first['source_id'] != second['source_id'] or first['source_start_us'] != second['source_start_us']:
+        return False
+    left_end = first['source_start_us'] + first['duration_us']
+    right_end = second['source_start_us'] + second['duration_us']
+    lower, upper = min(left_end, right_end), max(left_end, right_end)
+    return not any(lower <= row['start_us'] < upper
+                   for row in alignment.get('words', [])
+                   if isinstance(row.get('start_us'), int))
+
+
 def _cross_check_rule(input_data, paths, descriptor, alignment_path, output):
-    """When the fixed-pattern parser also understands the feedback, both must agree."""
+    """When the fixed-pattern parser also understands the feedback, both must cut the same material."""
     if len(input_data['instructions']) != 1:
         # The fixed patterns read one instruction; several (e.g. a rebased review) cannot be cross-checked.
         return 'not_applicable'
@@ -818,7 +844,11 @@ def _cross_check_rule(input_data, paths, descriptor, alignment_path, output):
                                    alignment_path if _requires_alignment(clips) else None)
     except VmError:
         return 'not_applicable'
-    if _edit_signature(rule['outputs'][0]) != _edit_signature(output):
+    rule_output, output = rule['outputs'][0], output
+    alignment = load_alignment(alignment_path, descriptor) if alignment_path else None
+    if (_edit_signature(rule_output) != _edit_signature(output)
+            and not (_same_cut(rule_output, output, alignment)
+                     and _edit_signature(rule_output)['effects'] == _edit_signature(output)['effects'])):
         raise VmError('INTENT_RULE_MISMATCH', 'Intent and fixed-pattern edits differ', blockers=[{
             'code': 'INTENT_RULE_MISMATCH',
             'message': 'The fixed-pattern parser also understands this instruction but compiles '
