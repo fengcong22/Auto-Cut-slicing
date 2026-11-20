@@ -1,6 +1,6 @@
 # Taskboard VM / PMO 接入状态
 
-更新时间：2026-10-15。Taskboard 与 `auto-cut-slicing` 的 VM/PMO v2 生产路径已接通，并通过合成媒体离线联调。真实测试记录上的审批、PMO 附件读回和 NAS 归档尚未验收；离线结果不代表这些外部效果已通过。
+更新时间：2026-11-20。**当前包声明 contract v3**（AI 写意图规划与 AI 看图复核已接入，见 [v3](vm-pmo-offline-contract-v3.md)）；以下 v2 内容描述的是 v2 生产路径，仍然适用于 schema v2 输入。2026-10-15 的描述：Taskboard 与 `auto-cut-slicing` 的 VM/PMO v2 生产路径已接通，并通过合成媒体离线联调。真实测试记录上的审批、PMO 附件读回和 NAS 归档尚未验收；离线结果不代表这些外部效果已通过。
 
 跨系统协议见 [VM / PMO v1](vm-pmo-offline-contract-v1.md) 和 [VM / PMO v2](vm-pmo-offline-contract-v2.md)。Taskboard 项目见 [feishu-codex-Taskboard](https://github.com/fengcong22/feishu-codex-Taskboard)。
 
