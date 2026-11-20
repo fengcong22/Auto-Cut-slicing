@@ -8,7 +8,7 @@
 - Taskboard 侧 v3 driver 已合并（fengcong22/feishu-codex-Taskboard#25）。启用还需要 Taskboard 配置
   `CODEX_VM_PMO_AI_MODEL` 和沙箱可读的 FFmpeg 目录 `CODEX_VM_PMO_AI_TOOL_DIR`。
 - 包仍接受 schema v1 / v2 输入，行为与计划哈希不变。
-- 第 6 步 `qa-review.json` 只预留了路径，包内没有读写它的命令。
+- 第 6 步由 `vm_pmo qa-review` 执行（见下文）。
 
 v1、v2 见 [v1](vm-pmo-offline-contract-v1.md)、[v2](vm-pmo-offline-contract-v2.md)，行为和计划哈希保持不变。
 AI 规划的步骤与规则见 [AI 参与剪辑工作流](ai-editing-workflow.md) 和 [意图计划](intent-schema.md)。
@@ -179,6 +179,22 @@ ready 时 `blockers` 为空；blocked 时 `coverage` 为 null，`blockers` 为�
 `plan_sha256`、`qa_sha256`、`overall`、`counts`、`reverse_asr`、`error`。回执只写一次，阻断也不例外；
 重复调用直接返回已有回执，不重新检查。`checked` 只表示检查已运行，
 `overall` 才是结果；`needs_human` 项仍须人工复核。
+
+**qa-review**（仅 `ai_intent`，第 6 步）：
+
+```powershell
+python -m auto_cut_slicing.vm_pmo qa-review --input <run_dir>\input.json --context <run_dir>\execution-context.json
+```
+
+- 前提：`qa-result.json` 为 `checked`，且 `qa.json` 的哈希等于其中的 `qa_sha256`。
+- 读取 `qa_review_path` 指向的复核文件（`schemas/qa-review.v1.schema.json`），校验后把画面结论合并进 `qa.json`。
+- 合并前先把 QA 原样保存到固定文件 `qa.before-review.json`；合并失败时恢复原文件并删除这份副本。
+- 结果写入固定文件 `qa-review-result.json`（只写一次；重复调用返回已有回执）：
+  `status`（`reviewed` / `blocked` / `failed`）、`plan_sha256`、`qa_sha256_before`（等于 `qa-result.json` 的 `qa_sha256`）、
+  `qa_sha256`（合并后的 `qa.json`）、`review_sha256`、`overall`、`counts`、`error`。
+- 阻断代码：`RENDER_REQUIRED`（没有可复核的 QA）、`REVIEW_MISSING`（没有复核文件）、`REVIEW_INVALID`（复核文件与报告不符）、`PLAN_CHANGED`。
+- `qa-result.json` 不会被改写，它始终证明 QA 当时产出了什么；交付判定应读取 `qa-review-result.json` 并按其 `qa_sha256` 校验当前 `qa.json`。
+- context 的 v3 路径不得指向 `qa-review-result.json` 或 `qa.before-review.json`。
 
 **测试边界**：`tests/test_vm_pmo_v3.py` 用合成媒体、合成 ASR 和手写意图代替真实 ASR 与 AI 步骤，
 只验证确定性机制，不代表真实识别、AI 判断、试听或 Taskboard 交付。

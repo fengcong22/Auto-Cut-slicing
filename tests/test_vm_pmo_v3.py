@@ -520,3 +520,77 @@ def test_review_on_original_source_rejects_invalid_requests(v3, change):
     save(v3)
     with pytest.raises(vm_pmo.VmError):
         vm_pmo._validate_input(read_json(v3["input_path"]))
+
+
+def _rendered_and_checked(v3):
+    analyze(v3)
+    write_intent(v3, intent(v3))
+    plan(v3)
+    vm_pmo.render_command(v3["input_path"], v3["context_path"], Path(v3["context"]["plan_path"]))
+    checked = vm_pmo.qa_command(v3["input_path"], v3["context_path"])
+    assert checked["status"] == "checked", checked["error"]
+    return checked
+
+
+def _write_review(v3, verdict):
+    qa_path = Path(v3["context"]["qa_path"])
+    request = read_json(qa_path.with_name(qa_path.stem + "-review-request.json"))
+    assert request["items"], "the fixture must leave picture items for review"
+    hashes, items = {}, []
+    for row in request["items"]:
+        for frame in row["frames"]:
+            hashes[frame["file"]] = frame["sha256"]
+        for question in row["questions"]:
+            items.append({"check_id": row["check_id"], "question_id": question["question_id"],
+                          "verdict": verdict, "observation": "Looked at every listed frame.",
+                          "frames": [frame["file"] for frame in row["frames"]]})
+    return write_json(v3["context"]["qa_review_path"], {
+        "schema": "auto-cut-slicing/qa-review", "schema_version": 1,
+        "qa_sha256": file_sha256(qa_path), "reviewer": {"agent": "codex", "model": "test-model"},
+        "frames_sha256": hashes, "items": items})
+
+
+def test_qa_review_receipt_binds_the_merged_report_and_keeps_the_original(v3):
+    checked = _rendered_and_checked(v3)
+    original = Path(v3["context"]["qa_path"]).read_bytes()
+    review = _write_review(v3, "clean")
+    result = vm_pmo.qa_review_command(v3["input_path"], v3["context_path"])
+    assert result["status"] == "reviewed", result["error"]
+    qa_path = Path(v3["context"]["qa_path"])
+    # qa-result.json still proves what QA produced; the new receipt proves the merged report.
+    assert read_json(v3["run_dir"] / "qa-result.json") == checked
+    assert result["qa_sha256_before"] == checked["qa_sha256"]
+    assert result["qa_sha256"] == file_sha256(qa_path) != checked["qa_sha256"]
+    assert result["review_sha256"] == file_sha256(review)
+    assert (v3["run_dir"] / "qa.before-review.json").read_bytes() == original
+    assert read_json(v3["run_dir"] / "qa-review-result.json") == result
+    assert result["overall"] == read_json(qa_path)["overall"] == "ready_for_review"
+    assert vm_pmo.qa_review_command(v3["input_path"], v3["context_path"]) == result
+
+
+def test_qa_review_defect_fails_and_records_it(v3):
+    _rendered_and_checked(v3)
+    _write_review(v3, "defect")
+    result = vm_pmo.qa_review_command(v3["input_path"], v3["context_path"])
+    assert (result["status"], result["overall"]) == ("reviewed", "failed")
+
+
+@pytest.mark.parametrize("problem", ["missing", "stale", "before_qa"])
+def test_qa_review_blocks_without_touching_the_report(v3, problem):
+    if problem == "before_qa":
+        result = vm_pmo.qa_review_command(v3["input_path"], v3["context_path"])
+        assert (result["status"], result["error"]["code"]) == ("blocked", "RENDER_REQUIRED")
+        return
+    _rendered_and_checked(v3)
+    qa_path = Path(v3["context"]["qa_path"])
+    original = qa_path.read_bytes()
+    if problem == "stale":
+        review = read_json(_write_review(v3, "clean"))
+        review["qa_sha256"] = "0" * 64
+        write_json(v3["context"]["qa_review_path"], review)
+    result = vm_pmo.qa_review_command(v3["input_path"], v3["context_path"])
+    expected = "REVIEW_MISSING" if problem == "missing" else "REVIEW_INVALID"
+    assert (result["status"], result["error"]["code"]) == ("blocked", expected)
+    assert qa_path.read_bytes() == original
+    assert not (v3["run_dir"] / "qa.before-review.json").exists()
+    assert read_json(v3["run_dir"] / "qa-review-result.json") == result
