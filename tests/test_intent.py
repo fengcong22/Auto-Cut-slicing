@@ -799,6 +799,7 @@ def test_a_review_that_does_not_match_the_report_is_refused(case, change):
 
 def test_a_still_stretch_the_source_also_holds_is_the_content_not_a_stall(monkeypatch):
     from fractions import Fraction
+
     from auto_cut_slicing import qa
 
     held, moving = b"\x10" * 576, [bytes([i]) * 576 for i in range(0, 250, 25)]

@@ -148,6 +148,8 @@ def _error(error):
         'INTENT_BLOCKED': 'The edit intent is blocked; see blockers.',
         'INTENT_RULE_MISMATCH': 'The edit intent and the fixed-pattern parser compile to different edits.',
         'RENDER_REQUIRED': 'QA requires a rendered MP4 for this run.',
+        'REVIEW_MISSING': 'The AI picture review was not written for this run.',
+        'REVIEW_INVALID': 'The AI picture review does not match the QA report.',
         'EXECUTION_FAILED': 'The local media operation failed.',
     }
     return {'code': code, 'message': messages.get(code, messages['EXECUTION_FAILED'])}
@@ -415,7 +417,8 @@ def _validate_context(context, input_path, context_path):
             raise VmError('INVALID_CONTEXT', f'{key} must be inside run_dir')
     if version == 3:
         fixed = {run_dir / 'alignment.words.json', run_dir / 'output.words.json',
-                 run_dir / 'qa-result.json', run_dir / '.plan.lock'}
+                 run_dir / 'qa-result.json', run_dir / 'qa-review-result.json',
+                 run_dir / 'qa.before-review.json', run_dir / '.plan.lock'}
         if fixed & set(paths.values()):
             raise VmError('INVALID_CONTEXT', 'Context paths must not reuse fixed run files')
         for key in ('intent_context_path', 'intent_path', 'analyze_result_path', 'qa_path',
@@ -1173,10 +1176,80 @@ def _qa_outcome(input_data, context, paths, base, reverse_asr):
                 'counts': None, 'reverse_asr': reverse_asr, 'error': _error(error)}
 
 
+def qa_review_command(input_path, context_path):
+    """Merge the AI picture review at ``qa_review_path`` into ``qa.json`` and publish a receipt.
+
+    ``qa-result.json`` keeps proving what QA produced; ``qa-review-result.json`` binds the reviewed
+    report, the review file and the report as it was before the merge, so both states stay
+    verifiable. Written once; a repeated call returns the saved receipt.
+    """
+    from .qa import apply_review
+
+    input_data, context, paths, base = _v3_request(input_path, context_path)
+    run_dir = paths['run_dir']
+    receipt_path = run_dir / 'qa-review-result.json'
+    before_path = run_dir / 'qa.before-review.json'
+    with _plan_lock(run_dir):
+        if receipt_path.exists():
+            _regular_file(receipt_path, 'PLAN_CHANGED')
+            saved = read_json(receipt_path)
+            if not isinstance(saved, dict) or {key: saved.get(key) for key in base} != base:
+                raise VmError('OUTPUT_EXISTS', 'Existing QA review result belongs to a different request')
+            return saved
+        result = _qa_review_outcome(paths, base, before_path, apply_review)
+        write_new_json(receipt_path, result)
+        return result
+
+
+def _qa_review_outcome(paths, base, before_path, apply_review):
+    qa_result = None
+    try:
+        try:
+            _regular_file(paths['run_dir'] / 'qa-result.json', 'RENDER_REQUIRED')
+            qa_result = read_json(paths['run_dir'] / 'qa-result.json')
+        except (OSError, ValueError) as error:
+            raise VmError('RENDER_REQUIRED', 'QA result is unavailable') from error
+        if (not isinstance(qa_result, dict) or qa_result.get('status') != 'checked'
+                or {key: qa_result.get(key) for key in base} != base):
+            raise VmError('RENDER_REQUIRED', 'AI review requires a checked QA result for this run')
+        _regular_file(paths['qa_path'], 'PLAN_CHANGED')
+        if file_sha256(paths['qa_path']) != qa_result['qa_sha256']:
+            raise VmError('PLAN_CHANGED', 'QA report differs from the QA result')
+        if not paths['qa_review_path'].exists():
+            raise VmError('REVIEW_MISSING', 'No AI picture review was written for this run')
+        _regular_file(paths['qa_review_path'], 'REVIEW_INVALID')
+        review_sha256 = file_sha256(paths['qa_review_path'])
+        # Keep the report exactly as QA wrote it, then merge in place.
+        before = paths['qa_path'].read_bytes()
+        if before_path.exists():
+            raise VmError('OUTPUT_EXISTS', 'A pre-review QA report already exists')
+        before_path.write_bytes(before)
+        try:
+            merged = apply_review(paths['qa_path'], paths['qa_path'].with_name(
+                paths['qa_path'].stem + '-frames'), paths['qa_review_path'])
+        except SlicingError as error:
+            paths['qa_path'].write_bytes(before)
+            before_path.unlink()
+            raise VmError('REVIEW_INVALID', 'AI picture review does not apply') from error
+        if file_sha256(paths['qa_review_path']) != review_sha256:
+            raise VmError('PLAN_CHANGED', 'AI review changed during the merge')
+        return {**base, 'status': 'reviewed', 'plan_sha256': qa_result['plan_sha256'],
+                'qa_sha256_before': qa_result['qa_sha256'],
+                'qa_sha256': file_sha256(paths['qa_path']),
+                'review_sha256': review_sha256,
+                'overall': merged['overall'], 'counts': merged['counts'], 'error': None}
+    except (VmError, SlicingError, OSError, ValueError, KeyError, TypeError) as error:
+        return {**base, 'status': 'blocked' if isinstance(error, VmError) else 'failed',
+                'plan_sha256': qa_result.get('plan_sha256') if isinstance(qa_result, dict) else None,
+                'qa_sha256_before': qa_result.get('qa_sha256') if isinstance(qa_result, dict) else None,
+                'qa_sha256': None, 'review_sha256': None, 'overall': None, 'counts': None,
+                'error': _error(error)}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='python -m auto_cut_slicing.vm_pmo')
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('analyze', 'plan', 'render', 'qa'):
+    for name in ('analyze', 'plan', 'render', 'qa', 'qa-review'):
         command = commands.add_parser(name)
         command.add_argument('--input', required=True, type=Path)
         command.add_argument('--context', required=True, type=Path)
@@ -1193,6 +1266,8 @@ def main(argv=None):
             result = analyze_command(args.input, args.context)
         elif args.command == 'qa':
             result = qa_command(args.input, args.context, reverse_asr=args.reverse_asr)
+        elif args.command == 'qa-review':
+            result = qa_review_command(args.input, args.context)
         elif args.command == 'plan':
             result = plan_command(args.input, args.context)
         else:
@@ -1205,7 +1280,7 @@ def main(argv=None):
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))
-    return 0 if result['status'] in ('ready', 'rendered', 'blocked', 'checked') else 1
+    return 0 if result['status'] in ('ready', 'rendered', 'blocked', 'checked', 'reviewed') else 1
 
 
 if __name__ == '__main__':
