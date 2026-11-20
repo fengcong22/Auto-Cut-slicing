@@ -47,10 +47,10 @@
 | 规划与渲染 | 不变：`plan` / `render` / `draft` / `run`；VM/PMO 用 `vm_pmo plan` / `render` |
 | 成片反向 ASR | 手动：对成片运行 `transcribe`，再把结果传给 `qa --video-asr` |
 | 内容质量检查 | 已实现：`qa --context C --intent I --plan P --output-id O --video V --report R [--video-asr W]`，并导出接缝帧 |
-| AI 复核 QA 画面（qa-review） | **未实现**。看图后的结论写在报告之外，不能修改 `qa.json` |
-| VM/PMO v3 包侧命令 | 已实现：`vm_pmo analyze` / `plan`（`planning_mode: ai_intent`）/ `render` / `qa`，见 [v3](vm-pmo-offline-contract-v3.md)；manifest 尚未声明 v3 |
-| Taskboard 自动入口携带意图 | **未接入**。Taskboard 还没有 v3 driver 和启动 AI 的步骤，生产仍走 v2 固定句式或 `manual_revision` |
-| AI 在 Taskboard 中看图 | **未验证**。在验证前，画面判断一律交给审批环节由人复核 |
+| AI 复核 QA 画面（qa-review） | 已实现：`qa` 同时写 `<report>-review-request.json`，看图后写 qa-review 文件，`qa-review --report --review` 校验并合并（`clean` → `ai_reviewed`，`defect` → `failed`，`unclear` 仍 `needs_human`）；VM/PMO 用 `vm_pmo qa-review` 并写 `qa-review-result.json`。包不调用模型，真实模型的看图质量未验证 |
+| VM/PMO v3 包侧命令 | 已实现：`vm_pmo analyze` / `plan`（`planning_mode: ai_intent`）/ `render` / `qa` / `qa-review`，见 [v3](vm-pmo-offline-contract-v3.md)；manifest 已声明 v3（2026-11-17） |
+| Taskboard 自动入口携带意图 | 已接入：Taskboard 的 v3 driver 启动 AI 写意图并调度 analyze → plan → render → qa → qa-review（feishu-codex-Taskboard #25、#49）。真实测试记录上的端到端验收未做 |
+| AI 在 Taskboard 中看图 | 已接入但**未在真实素材上验证**：Taskboard 把导出帧作为图片附给 AI 会话。AI 判 `clean` 只记为 `ai_reviewed`，不等于验收；能否抓到真实残留需用真实成片验证 |
 | 审核截图 | 已接入：manifest 声明 `interface.inputs: ["review_images"]` 后，Taskboard 把审核截图作为图片附给第 2 步的 AI 会话，用于理解意见位置；截图不是时间来源，见 [v3](vm-pmo-offline-contract-v3.md#审核截图interfaceinputs-review_images) |
 | 审核轮回到原片 | 已实现：manifest 声明 `review_original_source` 后，审核轮在原片上重新规划整条视频并覆盖全部轮次意见；审核意见中的时间按该稿片段表换算成原片时间，见 [v3](vm-pmo-offline-contract-v3.md#审核轮回到原片interfaceinputs-review_original_source) |
 | 审核轮续接对话 | Taskboard 在审核轮用 `codex exec resume` 接回上一轮的同一 AI 会话，提示中给出上一轮运行目录（只读）和新的运行目录；无法续接时新开会话 |
@@ -182,7 +182,7 @@
 | --- | --- | --- |
 | 候选有歧义、需要用户决定 | 列出候选请用户选择；回答作为新的补充意见记录后继续 | 不能提问：写 `blocked` 意图和阻断原因，交审批环节处理 |
 | 能力不支持 | 说明做不到什么，并给出可行的替代做法供用户确认 | `blocked`，原意见保留在回执中 |
-| 画面复核 | 能看图时可写 `ai_reviewed`，仍提示用户确认 | 看图能力验证之前一律 `needs_human` |
+| 画面复核 | 能看图时可写 `ai_reviewed`，仍提示用户确认 | 看图复核已接入（`qa-review`）；结论 `unclear` 或看图失败时保持 `needs_human` |
 | 交付 | 本地路径和报告 | 只返回计划、证据与 QA；审批、上传、回写由 Taskboard 完成 |
 
 ## 禁止事项

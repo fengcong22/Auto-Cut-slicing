@@ -12,10 +12,11 @@ Develop on `codex/*`, `feature/*` or `fix/*` branches. It is not an Auto-Cut Lit
   cite a verifiable source (user-written time, ASR word edge, decoded frame, source edge, audio
   measurement). Choose among repeated phrases only by uniqueness, user time, user ordinal or user
   context; otherwise block and list candidates. Report unsupported or unevidenced requests; never
-  describe unimplemented capabilities (QA image review, VM/PMO v3) as executed. Place outgoing cuts
-  inside a measured `evidence audio-gap` window, not at the last word's ASR end. Leave about one
-  second of speech-free time per cut from natural pauses, and during a seam pause hold the previous
-  clip's last frame until the next clip's sound begins.
+  describe unimplemented capabilities as executed. QA image review and VM/PMO v3 are implemented but
+  not yet verified on real media: report an AI picture review as `ai_reviewed`, never as acceptance.
+  Place outgoing cuts inside a measured `evidence audio-gap` window, not at the last word's ASR end.
+  Leave about one second of speech-free time per cut from natural pauses, and during a seam pause
+  hold the previous clip's last frame until the next clip's sound begins.
 - This workflow makes real ripple edits: deleting words or paragraphs reduces output duration.
   Keep complete source files; expose each retained range as an editable video/audio segment.
 - Independent slices and ordered multi-source concatenation share one maintained planner.
