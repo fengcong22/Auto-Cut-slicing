@@ -22,7 +22,7 @@ JSON Schema 只检查结构。本文的“校验规则”是语义要求，valid
 | `intent validate` / `intent compile` 命令 | 已实现（`auto_cut_slicing/intent.py`），执行 V01–V14 |
 | 规划器按 `word_indices` 定位 | 不改规划器：编译时用 `text` + `rough_time` + 收窄的 `search_radius` 让现有唯一匹配落到选定的那一处，再由 V14 核对 |
 | `audio_point` / `gap_choice` 时间来源 | 已实现：引用 `evidence audio-gap` 的测量结果 |
-| VM/PMO 协议携带意图 | 包侧已实现（`vm_pmo` schema v3），Taskboard 未接入、manifest 未声明，见 [v3](vm-pmo-offline-contract-v3.md) |
+| VM/PMO 协议携带意图 | 包侧已实现（`vm_pmo` schema v3），manifest 已声明 v3；Taskboard v3 driver 已接入（feishu-codex-Taskboard #25、#49），真实测试记录上的端到端验收未做，见 [v3](vm-pmo-offline-contract-v3.md) |
 
 不得把“未实现”的命令写成已执行，也不得声称 validator 已经校验过某个意图文件。
 
