@@ -59,6 +59,10 @@ MP4 校验、附件追加读回和阶段写回；离线合成素材验证覆盖�
 附件更新及最终归档仍须单独验收，步骤见 [真实验收清单](docs/real-acceptance-checklist.md)。Taskboard 项目见
 [feishu-codex-Taskboard](https://github.com/fengcong22/feishu-codex-Taskboard)。
 
+manifest 当前声明 [VM / PMO v3](docs/vm-pmo-offline-contract-v3.md)：Taskboard v3 driver 启动 AI 写剪辑意图，
+再调度 `vm_pmo analyze` → `plan` → `render` → `qa` → `qa-review`。AI 看图复核只记为 `ai_reviewed`，
+真实测试记录上的端到端验收未做，能力状态见 [AI 参与剪辑工作流](docs/ai-editing-workflow.md#能力状态)。
+
 ```powershell
 python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/taskboard-result.json
 python -m auto_cut_slicing run examples/taskboard-request.json --result tmp/taskboard-result.json --resume
